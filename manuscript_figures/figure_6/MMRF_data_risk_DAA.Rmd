@@ -1,0 +1,961 @@
+---
+title: "MMRF DAA & Unsupervised Risk analysis."
+author: "Edgar Gonzalez-Kozlova"
+date: "Oct18 2023"
+output: 
+  html_document:
+  toc: true
+toc_depth: 2
+toc_float: true
+fig_height: 7
+fig_width: 7
+highlight: espresso
+number_sections: yes
+theme: cerulean
+---
+
+# 
+
+## Differential abundance analysis and cell proportions
+
+### Load Libraries and set working directory
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hide'}
+### 
+libs<-c('scater','loomR','Seurat','patchwork','SeuratDisk','monocle3','ggpubr','cowplot','ggplot2','ggbeeswarm',
+        'monocle3','limma','edgeR','fitdistrplus','factoextra','ggrepel','tidyverse','pheatmap','reshape2','ComplexHeatmap',
+        "survminer","survival","ggalluvial",'gtsummary','variancePartition','DirichletReg','cowsay','emmeans')
+lapply(libs, require, character.only = TRUE) ; rm(libs)
+### 
+setwd("/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/")
+```
+
+### Load data and/or tables
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+file_717_per_cell_md <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/per_cell_md.rds')
+#test <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/717_per_cell_md.rds') # same file
+#identical(rownames(test),rownames(file_717_per_cell_md)) # check
+```
+
+### Data cleaning and preparation
+
+```{r message=FALSE, warning=FALSE}
+### Mark doublets in a binary variable
+file_717_per_cell_md$doublet_pred_edit <- file_717_per_cell_md$doublet_pred
+file_717_per_cell_md$doublet_pred_edit[file_717_per_cell_md$doublet_pred_edit %in% c('Plasma_B','poss_singlet_cluster','singlet')] <- 'singlet'
+```
+
+```{r message=FALSE, warning=FALSE}
+### cells x sample
+x <- melt(table(file_717_per_cell_md$sample_id))
+```
+
+
+```{r include=FALSE}
+### plot/store
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/review_diag_cell_number_per_sample.pdf',width = 3,height = 2)
+ggarrange(
+  ggplot(data=x)+aes(x='Samples',y=log10(value))+theme_classic()+geom_boxplot(),
+  ggplot(data=x)+aes(y=log10(value))+theme_classic()+geom_density(fill='grey'),ncol=2,align='hv'
+  )
+dev.off()
+```
+
+### Data distribution
+
+```{r fig.width = 3, fig.height = 2}
+ggarrange(
+  ggplot(data=x)+aes(x='Samples',y=log10(value))+theme_classic()+geom_boxplot(),
+  ggplot(data=x)+aes(y=log10(value))+theme_classic()+geom_density(fill='grey'),ncol=2,align='hv'
+  )
+```
+
+### Investigate data composition for Site x Batch
+
+```{r message=FALSE, warning=FALSE}
+### Prepare data for composition
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% c('sample_id','visit_type','siteXbatch'))]
+rownames(x) <- NULL ; x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+rownames(x) <- x$sample_id
+x$sample_id <- NULL ; x$siteXbatch <- NULL
+
+y <- melt(table(file_717_per_cell_md$sample_id))
+y <- as.data.frame(y)
+y <- y[order(y$value,decreasing = T),]
+rownames(y) <- y$Var1
+y$Var1 <- NULL
+```
+
+### Verify and order data for correctness
+
+```{r message=TRUE, warning=FALSE}
+identical(rownames(y),rownames(x))
+```
+
+```{r message=FALSE, warning=FALSE}
+x<-x[match(rownames(y),rownames(x)),]
+```
+
+```{r message=TRUE, warning=FALSE}
+identical(rownames(y),rownames(x))
+```
+
+```{r message=FALSE, warning=FALSE}
+row_ha = rowAnnotation(foo2 = runif(10), bar2 = anno_barplot(runif(10)))
+row_ha = rowAnnotation(df=x,
+                       col = list(visit_type = c("baseline_diagnosis" = "pink","other" = "lightgreen", 
+                                                 "relapse_progression" = "orange", 
+                                                 "remission_response" = "deepskyblue1","post_transplant" = "blue"),
+                                  site = c("EMORY" = "darkred","MAYO" = "darkblue","MSSM" = "darkgreen","WUSTL" = "darkorange3"),
+                                  batch = c("B1" = "grey25","B2" = "grey50","B3" = "grey75","B4" = "grey90")))
+```
+
+```{r include=FALSE}
+### plot/store
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/review_diag_cell_number_batch_visit.pdf',width = 5,height = 5)
+Heatmap(as.matrix(log10(y+1)), 
+               col = colorRampPalette(c("steelblue","white","firebrick"))(255),
+               show_row_names = FALSE , show_column_names = FALSE,
+               #column_title_gp = gpar(fontsize = 1, fontface = "plain"), #column_names_gp = gpar(fontsize = 5, fontface = "plain"),
+               column_names_rot = 45, #column_km = 7, #row_km = 5,
+               #column_split =  generic_metadata_23$Time, 
+               row_split = x$site ,right_annotation = row_ha,
+               #clustering_method_rows = 'ward.D2', 
+               #clustering_method_columns = 'ward.D2',
+               #cluster_row_slices = TRUE, cluster_column_slices = TRUE,
+               #top_annotation = column_ha_23, #left_annotation = row_ha,
+               border = TRUE, use_raster = FALSE,
+               name = "Log10(Cells)")
+dev.off()
+```
+
+```{r fig.width = 5, fig.height = 5}
+Heatmap(as.matrix(log10(y+1)), 
+               col = colorRampPalette(c("steelblue","white","firebrick"))(255),
+               show_row_names = FALSE , show_column_names = FALSE,
+               column_names_rot = 45, 
+               row_split = x$site ,right_annotation = row_ha,
+               border = TRUE, use_raster = FALSE,
+               name = "Log10(Cells)")
+```
+
+### subcluster x sample
+
+```{r message=FALSE, warning=FALSE}
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+
+identical(colnames(y),rownames(x))
+x<-x[match(colnames(y),rownames(x)),]
+identical(colnames(y),rownames(x))
+
+col_ha = rowAnnotation(df=x, col = list(visit_type = c("baseline_diagnosis" = "pink", 
+                                                       "other" = "lightgreen", 
+                                                       "relapse_progression" = "orange", 
+                                                       "remission_response" = "deepskyblue1", 
+                                                       "post_transplant" = "blue"),
+                                        site = c("EMORY" = "darkred", 
+                                                 "MAYO" = "darkblue", 
+                                                 "MSSM" = "darkgreen", 
+                                                 "WUSTL" = "darkorange3"),
+                                        batch = c("B1" = "grey25", 
+                                                  "B2" = "grey50", 
+                                                  "B3" = "grey75", 
+                                                  "B4" = "grey90")))
+
+z <- data.frame(Compartment=rownames(y),Cluster=rownames(y))
+z$Compartment[grep('Plasma',z$Compartment)]<- 'Plasma'
+z$Compartment[grep('NkT',z$Compartment)]<- 'NkT'
+z$Compartment[grep('Myeloid',z$Compartment)]<- 'Myeloid'
+z$Compartment[grep('^BEry',z$Compartment)]<- 'BEry'
+z$Compartment[grep('^Ery',z$Compartment)]<- 'Ery'
+z$Compartment[grep('Full',z$Compartment)]<- 'Fibroblasts'
+rownames(z) <- z$Cluster
+z$Cluster <- NULL
+```
+
+```{r include=FALSE}
+### plot/store
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/review_diag_cell_number_cluster_x_visit.pdf',width = 5,height = 7)
+Heatmap(t(as.matrix(log10(y+1))), 
+        col = colorRampPalette(c("steelblue","white","firebrick"))(255),
+        show_row_names = FALSE , show_column_names = FALSE,
+        #column_title_gp = gpar(fontsize = 1, fontface = "plain"), #column_names_gp = gpar(fontsize = 5, fontface = "plain"),
+        column_names_rot = 45, #column_km = 7, #row_km = 5,
+        row_split =  x$visit_type, 
+        column_split = z$Compartment,
+        #top_annotation = col_ha,
+        right_annotation = col_ha,
+        #clustering_method_rows = 'ward.D2', 
+        #clustering_method_columns = 'ward.D2',
+        #cluster_row_slices = TRUE, cluster_column_slices = TRUE,
+        #top_annotation = column_ha_23, #left_annotation = row_ha,
+        border = TRUE, use_raster = FALSE,
+        name = "Log10(Cells)")
+dev.off()
+```
+
+```{r fig.width = 5, fig.height = 7}
+Heatmap(t(as.matrix(log10(y+1))), 
+        col = colorRampPalette(c("steelblue","white","firebrick"))(255),
+        show_row_names = FALSE , show_column_names = FALSE, column_names_rot = 45, 
+        row_split =  x$visit_type,  column_split = z$Compartment,
+        right_annotation = col_ha,
+        border = TRUE, use_raster = FALSE,
+        name = "Log10(Cells)")
+```
+
+### Variance Partition / Mixed effect model with multiple random effects
+
+```{r message=FALSE, warning=FALSE}
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+
+for(i in 1:ncol(y)){ y[,i] <- y[,i]/sum(y[,i]) }
+
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% c('davies_based_risk','sample_id','visit_type','siteXbatch','progression_group'))]
+rownames(x) <- NULL
+x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+rownames(x) <- x$sample_id
+x$sample_id <- NULL ; x$siteXbatch <- NULL
+```
+
+```{r message=TRUE, warning=FALSE}
+identical(colnames(y),rownames(x))
+```
+
+```{r message=FALSE, warning=FALSE}
+x<-x[match(colnames(y),rownames(x)),]
+```
+
+```{r message=TRUE, warning=FALSE}
+identical(colnames(y),rownames(x))
+``` 
+
+```{r message=FALSE, warning=FALSE}
+### packages and multicore settings
+libs<-c("variancePartition","doParallel","BiocParallel")
+lapply(libs, require, character.only = TRUE)
+registerDoParallel(makeCluster(10)) 
+```
+
+### RISK (all clusters)
+
+```{r message=FALSE, warning=FALSE}
+###
+my_doublets <- unique(file_717_per_cell_md$subcluster_V03072023[file_717_per_cell_md$doublet_pred_edit %in% c('dblet_cluster','poss_dblet_cluster')])
+### 4 variables
+form <- ~ (1|davies_based_risk) + (1|visit_type) + (1|site) + (1|batch)
+### run the model
+variance_exprs_matrix <- fitExtractVarPartModel(y, form, x)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/review_diag_variance_confounders_risk.pdf',width = 4,height = 2.5)
+plotVarPart( sortCols( variance_exprs_matrix ) ) +theme_classic()+ ggtitle( 'Variance') + theme(axis.text.x = element_text(angle = 60,hjust = 1))
+dev.off()
+```
+
+```{r fig.width = 4, fig.height = 2.5}
+plotVarPart( sortCols( variance_exprs_matrix ) ) +theme_classic()+ ggtitle( 'Variance') + theme(axis.text.x = element_text(angle = 60,hjust = 1))
+```
+
+### Progression (all clusters)
+
+```{r message=FALSE, warning=FALSE}
+### progression
+form <- ~ (1|progression_group) + (1|visit_type) + (1|site) + (1|batch)
+### run the model
+variance_exprs_matrix <- fitExtractVarPartModel(y, form, x)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/review_diag_variance_confounders_progression.pdf',width = 4,height = 2.5)
+plotVarPart( sortCols( variance_exprs_matrix ) ) +theme_classic()+ ggtitle( 'Variance') + theme(axis.text.x = element_text(angle = 60,hjust = 1))
+dev.off()
+```
+
+### Variance Risk (No doublet clusters)
+
+```{r message=FALSE, warning=FALSE}
+my_doublets <- as.character(unique(file_717_per_cell_md$subcluster_V03072023[which(!file_717_per_cell_md$doublet_pred_edit %in% 'singlet')]))
+### 4 variables
+form <- ~ (1|davies_based_risk) + (1|visit_type) + (1|site) + (1|batch)
+### run the model
+variance_exprs_matrix <- fitExtractVarPartModel(y[!rownames(y) %in% my_doublets,], form, x)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/review_diag_variance_confounders_risk_noDB.pdf',width = 4,height = 2.5)
+plotVarPart( sortCols( variance_exprs_matrix ) ) +theme_classic()+ ggtitle( 'Variance') + theme(axis.text.x = element_text(angle = 60,hjust = 1))
+dev.off()
+```
+
+```{r fig.width = 4, fig.height = 2.5}
+plotVarPart( sortCols( variance_exprs_matrix ) ) +theme_classic()+ ggtitle( 'Variance') + theme(axis.text.x = element_text(angle = 60,hjust = 1))
+```
+
+### Variance Progression (No doublet clusters)
+
+```{r message=FALSE, warning=FALSE}
+### progression
+form <- ~ (1|progression_group) + (1|visit_type) + (1|site) + (1|batch)
+### run the model
+variance_exprs_matrix <- fitExtractVarPartModel(y[!rownames(y) %in% my_doublets,], form, x)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/review_diag_variance_confounders_progression_noDB.pdf',width = 4,height = 2.5)
+plotVarPart( sortCols( variance_exprs_matrix ) ) +theme_classic()+ ggtitle( 'Variance') + theme(axis.text.x = element_text(angle = 60,hjust = 1))
+dev.off()
+```
+
+```{r fig.width = 4, fig.height = 2.5}
+plotVarPart( sortCols( variance_exprs_matrix ) ) +theme_classic()+ ggtitle( 'Variance') + theme(axis.text.x = element_text(angle = 60,hjust = 1))
+```
+
+### DAA Progression (All samples)
+
+```{r message=FALSE, warning=FALSE}
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+
+#y <- log2(y+1)
+for(i in 1:ncol(y)){ y[,i] <- y[,i]/sum(y[,i]) }
+  
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% c('davies_based_risk','sample_id','visit_type','siteXbatch','progression_group'))]
+rownames(x) <- NULL
+x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+rownames(x) <- x$sample_id
+x$sample_id <- NULL ; x$siteXbatch <- NULL
+
+identical(colnames(y),rownames(x))
+x<-x[match(colnames(y),rownames(x)),]
+identical(colnames(y),rownames(x))
+
+### subset
+ix <- which(x$davies_based_risk %in% c('high_risk','standard_risk') & x$visit_type %in% c('baseline_diagnosis'))
+x <- x[ix,]
+y <- y[,ix]
+
+### Design 
+form <- ~ 0 + progression_group + (1|site) + (1|batch)
+### no weights because data is already normalized
+L =  makeContrastsDream( form, x, 
+                         contrasts = c(#'progression_groupInc - progression_groupNP','progression_groupP - progression_groupNP',
+                                       'progression_groupRP - progression_groupNP'))
+### fit with contrasts
+fitmm = dream( y, form, x, L)
+```
+
+```{r message=FALSE, warning=FALSE}
+### Store all outcome statistics
+lmfreq_results <- list() ; for ( i in 1 ) { lmfreq_results[[i]] <- topTable(fitmm, coef=i,n=Inf,adjust.method="fdr") 
+lmfreq_results[[i]]$Comparison <- colnames(fitmm$coefficients)[i]
+lmfreq_results[[i]]$Marker <- rownames( topTable(fitmm, coef=i,n=Inf,adjust.method="fdr") ) }
+progression_res <- do.call(rbind,lmfreq_results)
+rownames(progression_res) <- NULL
+
+progression_res$nLogFDR <- -log10(progression_res$adj.P.Val)
+progression_res$Comparison <- gsub('progression_group','',progression_res$Comparison)
+```
+
+### DAA Risk (all clusters)
+
+```{r message=FALSE, warning=FALSE}
+### Risk
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+
+#y <- log2(y+1)
+for(i in 1:ncol(y)){ y[,i] <- y[,i]/sum(y[,i]) }
+
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% c('davies_based_risk','sample_id','visit_type','siteXbatch','progression_group'))]
+rownames(x) <- NULL
+x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+rownames(x) <- x$sample_id
+x$sample_id <- NULL ; x$siteXbatch <- NULL
+
+identical(colnames(y),rownames(x))
+x<-x[match(colnames(y),rownames(x)),]
+identical(colnames(y),rownames(x))
+
+### subset
+ix <- which(x$davies_based_risk %in% c('high_risk','standard_risk') & x$visit_type %in% c('baseline_diagnosis'))
+x <- x[ix,]
+y <- y[,ix]
+
+### Design 
+form <- ~ 0 + davies_based_risk + (1|site) + (1|batch)
+### no weights because data is already normalized
+L =  makeContrastsDream( form, 
+                         x, 
+                         contrasts = c('davies_based_riskhigh_risk - davies_based_riskstandard_risk'))
+### fit with contrasts
+fitmm = dream( y, form, x, L)
+```
+
+```{r message=FALSE, warning=FALSE}
+### Store all outcome statistics
+lmfreq_results <- list() ; for ( i in 1 ) { lmfreq_results[[i]] <- topTable(fitmm, coef=i,n=Inf,adjust.method="fdr") 
+lmfreq_results[[i]]$Comparison <- colnames(fitmm$coefficients)[i]
+lmfreq_results[[i]]$Marker <- rownames( topTable(fitmm, coef=i,n=Inf,adjust.method="fdr") ) }
+risk_res <- do.call(rbind,lmfreq_results)
+rownames(risk_res) <- NULL
+
+risk_res$nLogFDR <- -log10(risk_res$adj.P.Val)
+risk_res$Comparison <- gsub('davies_based_risk','',risk_res$Comparison)
+```
+
+### DAA Progression (No Doublet clusters)
+
+```{r message=FALSE, warning=FALSE}
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+  
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% c('davies_based_risk','sample_id','visit_type','siteXbatch','progression_group'))]
+rownames(x) <- NULL
+x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+rownames(x) <- x$sample_id
+x$sample_id <- NULL ; x$siteXbatch <- NULL
+
+identical(colnames(y),rownames(x))
+x<-x[match(colnames(y),rownames(x)),]
+identical(colnames(y),rownames(x))
+
+### subset
+ix <- which(x$davies_based_risk %in% c('high_risk','standard_risk') & x$visit_type %in% c('baseline_diagnosis'))
+x <- x[ix,]
+y <- y[,ix]
+y <- y[!rownames(y) %in% my_doublets,]
+#y <- log2(y+1)
+for(i in 1:ncol(y)){ y[,i] <- y[,i]/sum(y[,i]) }
+
+
+### Design 
+form <- ~ 0 + progression_group  + (1|site) + (1|batch)
+### no weights because data is already normalized
+L =  makeContrastsDream( form, x, 
+                         contrasts = c(#'progression_groupInc - progression_groupNP','progression_groupP - progression_groupNP',
+                                       'progression_groupRP - progression_groupNP'))
+### fit with contrasts
+fitmm = dream( y, form, x, L)
+```
+
+```{r message=FALSE, warning=FALSE}
+### Store all outcome statistics
+lmfreq_results <- list() ; for ( i in 1:1 ) { lmfreq_results[[i]] <- topTable(fitmm, coef=i,n=Inf,adjust.method="fdr") 
+lmfreq_results[[i]]$Comparison <- colnames(fitmm$coefficients)[i]
+lmfreq_results[[i]]$Marker <- rownames( topTable(fitmm, coef=i,n=Inf,adjust.method="fdr") ) }
+progression_res_ND <- do.call(rbind,lmfreq_results)
+rownames(progression_res_ND) <- NULL
+
+progression_res_ND$nLogFDR <- -log10(progression_res_ND$adj.P.Val)
+progression_res_ND$Comparison <- gsub('progression_group','',progression_res_ND$Comparison)
+```
+
+### DAA Risk (No Doublet clusters)
+
+```{r message=FALSE, warning=FALSE}
+### Risk
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% c('davies_based_risk','sample_id','visit_type','siteXbatch','progression_group'))]
+rownames(x) <- NULL
+x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+rownames(x) <- x$sample_id
+x$sample_id <- NULL ; x$siteXbatch <- NULL
+
+identical(colnames(y),rownames(x))
+x<-x[match(colnames(y),rownames(x)),]
+identical(colnames(y),rownames(x))
+
+### subset
+ix <- which(x$davies_based_risk %in% c('high_risk','standard_risk') & x$visit_type %in% c('baseline_diagnosis'))
+x <- x[ix,]
+y <- y[,ix]
+y <- y[!rownames(y) %in% my_doublets,]
+#y <- log2(y+1)
+for(i in 1:ncol(y)){ y[,i] <- y[,i]/sum(y[,i]) }
+
+### Design 
+form <- ~ 0 + davies_based_risk + (1|site) + (1|batch)
+### no weights because data is already normalized
+L =  makeContrastsDream( form, 
+                         x, 
+                         contrasts = c('davies_based_riskhigh_risk - davies_based_riskstandard_risk'))
+### fit with contrasts
+fitmm = dream( y, form, x, L)
+```
+
+```{r message=FALSE, warning=FALSE}
+### Store all outcome statistics
+lmfreq_results <- list() ; for ( i in 1 ) { lmfreq_results[[i]] <- topTable(fitmm, coef=i,n=Inf,adjust.method="fdr") 
+lmfreq_results[[i]]$Comparison <- colnames(fitmm$coefficients)[i]
+lmfreq_results[[i]]$Marker <- rownames( topTable(fitmm, coef=i,n=Inf,adjust.method="fdr") ) }
+risk_res_ND <- do.call(rbind,lmfreq_results)
+rownames(risk_res_ND) <- NULL
+
+risk_res_ND$nLogFDR <- -log10(risk_res_ND$adj.P.Val)
+risk_res_ND$Comparison <- gsub('davies_based_risk','',risk_res_ND$Comparison)
+```
+
+### Comparison between all clusters and no doublets (ND) for Risk
+
+```{r message=FALSE, warning=FALSE}
+risk_res_tmp <- risk_res[which(risk_res$Marker %in% risk_res_ND$Marker),]
+identical(risk_res_tmp$Marker,risk_res_ND$Marker)
+a <-risk_res_tmp ; b <- risk_res_ND
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$AveExpr,b$AveExpr,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$logFC,b$logFC,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$adj.P.Val,b$adj.P.Val,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$P.Value,b$P.Value,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+x <- data.frame(c=b$Marker,logfc_nd=b$logFC,adpval_nd=b$adj.P.Val,m='ND')
+y <- data.frame(c=a$Marker,logfc=a$logFC,adpval=a$adj.P.Val,m='all')
+z<-merge(x,y,by='c')
+```
+
+```{r fig.width = 4, fig.height = 2.5}
+ggplot(data=z)+aes(x=logfc_nd,y=logfc) + theme_classic()+geom_point()
+```
+
+```{r fig.width = 4, fig.height = 2.5}
+ggplot(data=z)+aes(x=adpval_nd,y=adpval) + theme_classic()+geom_point()
+```
+
+### Comparison between all clusters and no doublets (ND) for Risk
+
+```{r message=FALSE, warning=FALSE}
+progression_res_tmp <- progression_res[which(progression_res$Marker %in% progression_res_ND$Marker),]
+a <- progression_res_tmp[progression_res_tmp$Comparison %in% 'RP - NP',]
+b <- progression_res_ND[progression_res_ND$Comparison %in% 'RP - NP',]
+identical(a$Marker,b$Marker)
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$AveExpr,b$AveExpr,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$logFC,b$logFC,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$adj.P.Val,b$adj.P.Val,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$P.Value,b$P.Value,method='pearson')
+```
+
+### DAA Risk (No Doublet clusters) # Per compartment as 100%
+
+```{r message=FALSE, warning=FALSE}
+### Risk
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+  
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% c('davies_based_risk','sample_id','visit_type','siteXbatch','progression_group'))]
+rownames(x) <- NULL
+x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+rownames(x) <- x$sample_id
+x$sample_id <- NULL ; x$siteXbatch <- NULL
+
+x<-x[match(colnames(y),rownames(x)),]
+
+### Subset
+ix <- which(x$davies_based_risk %in% c('high_risk','standard_risk') & x$visit_type %in% c('baseline_diagnosis'))
+x <- x[ix,]
+y <- y[,ix]
+y <- y[!rownames(y) %in% my_doublets,]
+
+Compartment <- c('NkT','BEry','Ery','Myeloid','Plasma') #,'Full'
+res <- list()
+for(iii in Compartment){
+  
+  ix <- grep(paste('^',iii,sep=''), rownames(y))
+  z <- y[ix,]
+  z[z==0] <- 0.0001
+  for(i in 1:ncol(z)){ z[,i] <- z[,i]/sum(z[,i]) } 
+  
+  ### Design 
+  form <- ~ 0 + davies_based_risk + (1|site) + (1|batch)
+  
+  ### no weights because data is already normalized
+  L =  makeContrastsDream( form, x, 
+                         contrasts = c('davies_based_riskstandard_risk - davies_based_riskhigh_risk'))
+  
+  ### fit with contrasts
+  fitmm = dream( z, form, x, L)
+  ###
+  a <- topTable(fitmm, coef=1,n=Inf,adjust.method="fdr") 
+  a$Comparison <- colnames(fitmm$coefficients)[1]
+  a$Marker <- rownames( topTable(fitmm, coef=1,n=Inf,adjust.method="fdr") ) 
+  a$nLogFDR <- -log10(a$adj.P.Val)
+  a$Comparison <- gsub('davies_based_risk','',a$Comparison)
+  res[[iii]] <- a
+}
+res_compartment_nd <- do.call(rbind,res)
+rownames(res_compartment_nd) <- res_compartment_nd$Marker
+```
+
+```{r message=FALSE, warning=FALSE}
+risk_res_tmp <- risk_res_ND[which(risk_res_ND$Marker %in% res_compartment_nd$Marker),]
+risk_res_tmp <- risk_res_tmp[match(res_compartment_nd$Marker,risk_res_tmp$Marker),]
+identical(res_compartment_nd$Marker,risk_res_tmp$Marker)
+a <-risk_res_tmp ; b <- res_compartment_nd
+```
+
+```{r message=FALSE, warning=FALSE}
+a <-risk_res_tmp ; b <- res_compartment_nd
+cor.test(a$AveExpr,b$AveExpr,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$logFC,b$logFC,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$adj.P.Val,b$adj.P.Val,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$P.Value,b$P.Value,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+x <- data.frame(c=b$Marker,logfc_nd=b$logFC,adpval_nd=b$adj.P.Val,m='ND')
+y <- data.frame(c=a$Marker,logfc=a$logFC,adpval=a$adj.P.Val,m='all')
+z<-merge(x,y,by='c')
+```
+
+```{r fig.width = 4, fig.height = 2.5}
+ggplot(data=z)+aes(x=logfc_nd,y=logfc) + theme_classic()+geom_point()
+```
+
+```{r fig.width = 4, fig.height = 2.5}
+ggplot(data=z)+aes(x=adpval_nd,y=adpval) + theme_classic()+geom_point()
+```
+
+### Risk for DREG (all cells)
+
+```{r message=FALSE, warning=FALSE}
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+#y <- log2(y+1)
+
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% c('davies_based_risk','sample_id','visit_type','siteXbatch','progression_group'))]
+rownames(x) <- NULL
+x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+rownames(x) <- x$sample_id
+x$sample_id <- NULL ; x$siteXbatch <- NULL
+
+identical(colnames(y),rownames(x))
+x<-x[match(colnames(y),rownames(x)),]
+identical(colnames(y),rownames(x))
+
+### subset
+ix <- which(x$davies_based_risk %in% c('high_risk','standard_risk') & x$visit_type %in% c('baseline_diagnosis'))
+x <- x[ix,]
+y <- y[,ix]
+
+# to the transformation proposed by Smithson and Verkuilen (2006)
+cell_proportions = DR_data( t(y ))
+x$site_batch <- paste(x$site,x$batch,sep='_')
+x$davies_based_risk <- factor(x$davies_based_risk,levels=c('standard_risk','high_risk'))
+dr_fit_common <- DirichReg( cell_proportions ~ davies_based_risk + site_batch, x, model = "common" )
+
+u = summary(dr_fit_common)
+pvals = u$coef.mat[grep('davies_based_riskhigh_risk', rownames(u$coef.mat), invert=FALSE), 4]
+v = names(pvals)
+
+prob.ratio = exp( summary(dr_fit_common)$coefficients[paste0(rownames(y),":davies_based_riskhigh_risk")] )
+
+pvals = matrix(pvals, ncol=length(u$varnames))
+rownames(pvals) = gsub('davies_based_riskhigh_risk', '', v[1:nrow(pvals)])
+colnames(pvals) = u$varnames
+
+dirichlet_res <- data.frame(log2fc = log2(exp( summary(dr_fit_common)$coefficients[paste0(rownames(y),":davies_based_riskhigh_risk")] )) , 
+                            pval=colMeans(pvals))
+
+rownames(dirichlet_res) <- gsub(':davies_based_riskhigh_risk','',rownames(dirichlet_res))
+```
+
+
+```{r message=FALSE, warning=FALSE}
+dirichlet_res$Marker <- rownames(dirichlet_res)
+risk_res_tmp <- dirichlet_res[which(dirichlet_res$Marker %in% risk_res$Marker),]
+risk_res_tmp <- risk_res_tmp[match(risk_res$Marker,risk_res_tmp$Marker),]
+identical(risk_res_tmp$Marker,risk_res$Marker)
+a <-risk_res_tmp ; b <- risk_res
+```
+
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$log2fc,b$logFC,method = 'pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$pval,b$P.Value,method = 'pearson')
+```
+
+### comparing both models Dream vs Dirichlet
+
+```{r fig.width = 4, fig.height = 2.5}
+ggplot()+aes(x=a$log2fc,y=b$logFC*100)+geom_point() + theme_classic() + 
+  geom_hline(yintercept = 0, linetype=2,color='deeppink') + geom_vline(xintercept = 0, linetype=2,color='deeppink') +
+  geom_smooth(color='skyblue1',method = 'glm')+labs(x='Dirichlet',y='Dream')
+```
+
+### Risk for DREG (no doublets)
+
+```{r message=FALSE, warning=FALSE}
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+#y <- log2(y+1)
+
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% c('davies_based_risk','sample_id','visit_type','siteXbatch','progression_group'))]
+rownames(x) <- NULL
+x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+rownames(x) <- x$sample_id
+x$sample_id <- NULL ; x$siteXbatch <- NULL
+
+identical(colnames(y),rownames(x))
+x<-x[match(colnames(y),rownames(x)),]
+identical(colnames(y),rownames(x))
+
+### subset
+ix <- which(x$davies_based_risk %in% c('high_risk','standard_risk') & x$visit_type %in% c('baseline_diagnosis'))
+x <- x[ix,]
+y <- y[,ix]
+y <- y[!rownames(y) %in% my_doublets,]
+
+# to the transformation proposed by Smithson and Verkuilen (2006)
+cell_proportions = DR_data( t(y ))
+x$site_batch <- paste(x$site,x$batch,sep='_')
+x$davies_based_risk <- factor(x$davies_based_risk,levels=c('standard_risk','high_risk'))
+dr_fit_common <- DirichReg( cell_proportions ~ davies_based_risk + site_batch, x, model = "common" )
+
+u = summary(dr_fit_common)
+pvals = u$coef.mat[grep('davies_based_riskhigh_risk', rownames(u$coef.mat), invert=FALSE), 4]
+v = names(pvals)
+
+prob.ratio = exp( summary(dr_fit_common)$coefficients[paste0(rownames(y),":davies_based_riskhigh_risk")] )
+
+pvals = matrix(pvals, ncol=length(u$varnames))
+rownames(pvals) = gsub('davies_based_riskhigh_risk', '', v[1:nrow(pvals)])
+colnames(pvals) = u$varnames
+
+dirichlet_ND_res <- data.frame(log2fc = log2(exp( summary(dr_fit_common)$coefficients[paste0(rownames(y),":davies_based_riskhigh_risk")] )) , 
+                            pval=colMeans(pvals))
+
+rownames(dirichlet_ND_res) <- gsub(':davies_based_riskhigh_risk','',rownames(dirichlet_ND_res))
+```
+
+
+```{r message=FALSE, warning=FALSE}
+dirichlet_ND_res$Marker <- rownames(dirichlet_ND_res)
+risk_res_tmp <- dirichlet_ND_res[which(dirichlet_ND_res$Marker %in% risk_res_ND$Marker),]
+risk_res_tmp <- risk_res_tmp[match(risk_res_ND$Marker,risk_res_tmp$Marker),]
+identical(risk_res_tmp$Marker,risk_res_ND$Marker)
+a <-risk_res_tmp ; b <- risk_res_ND
+```
+
+```{r fig.width = 4, fig.height = 2.5}
+ggplot()+aes(x=a$log2fc,y=b$logFC*100)+geom_point() + theme_classic() + 
+  geom_hline(yintercept = 0, linetype=2,color='deeppink') + geom_vline(xintercept = 0, linetype=2,color='deeppink') +
+  geom_smooth(color='skyblue1',method = 'glm')+labs(x='Dirichlet',y='Dream')
+```
+
+```{r message=FALSE, warning=FALSE}
+###
+my_cells <- rownames(y)
+###
+subcluster_V2_df <- melt(table(file_717_per_cell_md$subcluster_V03072023,
+                               file_717_per_cell_md$sample_id,
+                               file_717_per_cell_md$doublet_pred_edit,
+                               file_717_per_cell_md$visit_type,
+                               file_717_per_cell_md$davies_based_risk,
+                               file_717_per_cell_md$siteXbatch))
+colnames(subcluster_V2_df) <- c('Subcluster','sample_id','doublet','visit','risk','batch_site','cells')
+
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/review_diag_boxplots_cell_cluster_per_batch_site_baseline.pdf',width = 3,height = 7)
+for(i in 1:length(my_cells)){
+
+x <- subcluster_V2_df[subcluster_V2_df$Subcluster %in% my_cells[i] & 
+                        subcluster_V2_df$risk %in% c('high_risk','standard_risk') & 
+                        subcluster_V2_df$visit %in% c('baseline_diagnosis'),]
+
+x$log10cells <- log10(x$cells+1)
+x <- x[x$log10cells>0,]
+
+print(
+ggplot(data=x)+aes(x=risk,y=log10cells)+geom_boxplot(outlier.size = NA,outlier.shape =NA)+
+  theme_classic()+geom_quasirandom()+
+  labs(title = paste(my_cells[i]))+facet_wrap(~batch_site,ncol=3)+
+  rotate_x_text(angle = 90)
+)
+}
+dev.off()
+```
+
+```{r fig.width = 3, fig.height = 7}
+for(i in 1:length(my_cells)){
+
+x <- subcluster_V2_df[subcluster_V2_df$Subcluster %in% my_cells[i] & 
+                        subcluster_V2_df$risk %in% c('high_risk','standard_risk') & 
+                        subcluster_V2_df$visit %in% c('baseline_diagnosis'),]
+
+x$log10cells <- log10(x$cells+1)
+x <- x[x$log10cells>0,]
+
+print(
+ggplot(data=x)+aes(x=risk,y=log10cells)+geom_boxplot(outlier.size = NA,outlier.shape =NA)+
+  theme_classic()+geom_quasirandom()+
+  labs(title = paste(my_cells[i]))+facet_wrap(~batch_site,ncol=3)+
+  rotate_x_text(angle = 90)
+)
+}
+```
+
+
+### Risk for DREG by compartment (no doublets)
+
+Duplicated code (identical to Yered's). Used for comparison purposes.
+
+```{r message=FALSE, warning=FALSE}
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+#y <- log2(y+1)
+
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% c('davies_based_risk','sample_id','visit_type','siteXbatch','progression_group'))]
+rownames(x) <- NULL
+x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+rownames(x) <- x$sample_id
+x$sample_id <- NULL ; x$siteXbatch <- NULL
+
+identical(colnames(y),rownames(x))
+x<-x[match(colnames(y),rownames(x)),]
+identical(colnames(y),rownames(x))
+
+### subset
+ix <- which(x$davies_based_risk %in% c('high_risk','standard_risk') & x$visit_type %in% c('baseline_diagnosis'))
+x <- x[ix,]
+y <- y[,ix]
+y <- y[!rownames(y) %in% my_doublets,]
+
+my_res_list<-list()
+Compartment <- c('NkT','BEry','Ery','Myeloid','Plasma') #,'Full'
+res <- list()
+for(iii in Compartment){
+  
+  ix <- grep(paste('^',iii,sep=''), rownames(y))
+  z <- y[ix,]
+  
+# to the transformation proposed by Smithson and Verkuilen (2006)
+cell_proportions = DR_data(t(z))
+x$site_batch <- paste(x$site,x$batch,sep='_')
+x$davies_based_risk <- factor(x$davies_based_risk,levels=c('standard_risk','high_risk'))
+dr_fit_common <- DirichReg( cell_proportions ~ davies_based_risk + site_batch, x, model = "common" )
+
+u = summary(dr_fit_common)
+pvals = u$coef.mat[grep('davies_based_riskhigh_risk', rownames(u$coef.mat), invert=FALSE), 4]
+v = names(pvals)
+
+prob.ratio = exp( summary(dr_fit_common)$coefficients[paste0(rownames(z),":davies_based_riskhigh_risk")] )
+
+pvals = matrix(pvals, ncol=length(u$varnames))
+rownames(pvals) = gsub('davies_based_riskhigh_risk', '', v[1:nrow(pvals)])
+colnames(pvals) = u$varnames
+
+dirichlet_ND_comp_res <- data.frame(log2fc = log2(exp( summary(dr_fit_common)$coefficients[paste0(rownames(z),":davies_based_riskhigh_risk")] )) , 
+                               pval=colMeans(pvals),
+                               Marker=rownames(z))
+rownames(dirichlet_ND_comp_res) <- gsub(':davies_based_riskhigh_risk','',rownames(dirichlet_ND_comp_res))
+
+my_res_list[[iii]] <- dirichlet_ND_comp_res
+}
+dirichlet_ND_comp_res <- do.call(rbind,my_res_list)
+```
+
+### Test difference between Compartment Normalization vs All counts.
+
+```{r message=FALSE, warning=FALSE}
+dirichlet_ND_res$Marker <- rownames(dirichlet_ND_res)
+risk_res_tmp <- dirichlet_ND_res[which(dirichlet_ND_res$Marker %in% dirichlet_ND_comp_res$Marker),]
+risk_res_tmp <- risk_res_tmp[match(dirichlet_ND_comp_res$Marker,risk_res_tmp$Marker),]
+identical(risk_res_tmp$Marker,dirichlet_ND_comp_res$Marker)
+a <-risk_res_tmp ; b <- dirichlet_ND_comp_res
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$log2fc,b$log2fc,method='pearson')
+```
+
+```{r message=FALSE, warning=FALSE}
+cor.test(a$pval,b$pval,method='pearson')
+```
+
+Similarity between logfc and pvalue falls into 82% and 81% agreement respective. 
+
+### Store data.
+
+```{r message=FALSE, warning=FALSE, include=TRUE}
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_risk_res_ND_DAA_dream.RDS',risk_res_ND)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_prog_res_ND_DAA_dream.RDS',progression_res_ND)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_risk_res_DAA_dream.RDS',risk_res)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_prog_res_DAA_dream.RDS',progression_res)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_res_compartment_nd_DAA_dream.RDS',res_compartment_nd)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_dirichlet_res_DAA_dream.RDS',dirichlet_res)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_dirichlet_ND_res_DAA_dream.RDS',dirichlet_ND_res)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_dirichlet_ND_comp_res_DAA_dream.RDS',dirichlet_ND_comp_res)
+
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_risk_res_ND_DAA_dream.csv',risk_res_ND)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_prog_res_ND_DAA_dream.csv',progression_res_ND)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_risk_res_DAA_dream.csv',risk_res)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_prog_res_DAA_dream.csv',progression_res)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_res_compartment_nd_DAA_dream.csv',res_compartment_nd)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_prog_res_DAA_dream.csv',progression_res)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_dirichlet_res_DAA_dream.csv',dirichlet_res)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_diag_dirichlet_ND_comp_res_DAA_dream.csv',dirichlet_ND_comp_res)
+```
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+```

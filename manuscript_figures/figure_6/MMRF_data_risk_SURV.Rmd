@@ -1,0 +1,1635 @@
+---
+title: "MMRF Supervised & Unsupervised Risk Analysis."
+author: "Edgar Gonzalez-Kozlova"
+date: "Oct20 2023"
+output: 
+  html_document:
+  toc: true
+toc_depth: 2
+toc_float: true
+fig_height: 7
+fig_width: 7
+highlight: espresso
+number_sections: yes
+theme: cerulean
+---
+
+### Load Libraries and set working directory
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hide'}
+### 
+libs<-c('scater','loomR','Seurat','patchwork','SeuratDisk','monocle3','ggpubr','cowplot','ggplot2','ggbeeswarm','clusterProfiler',
+        'monocle3','limma','edgeR','fitdistrplus','factoextra','ggrepel','tidyverse','pheatmap','reshape2','ComplexHeatmap',
+        "survminer","survival","ggalluvial",'gtsummary','variancePartition','DirichletReg','cowsay','emmeans','forestmodel')
+lapply(libs, require, character.only = TRUE) ; rm(libs)
+### 
+setwd("/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/")
+```
+
+### Load data and/or tables
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+file_717_per_cell_md <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/1110_per_cell_md.rds')
+load(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/clinical_metadata_IA22_Feb03_release.RData')
+```
+
+### Data cleaning and preparation
+
+```{r message=FALSE, warning=FALSE}
+### Mark doublets in a binary variable
+file_717_per_cell_md$doublet_pred_edit <- file_717_per_cell_md$doublet_pred
+file_717_per_cell_md$doublet_pred_edit[file_717_per_cell_md$doublet_pred_edit %in% c('Plasma_B','poss_singlet_cluster','singlet')] <- 'singlet'
+```
+
+```{r message=FALSE, warning=FALSE}
+cmia22 <- clinical_metadata_IA22_Feb03_release[which(clinical_metadata_IA22_Feb03_release$public_id %in% file_717_per_cell_md$public_id),]
+cmia22 <- cmia22[,colnames(cmia22) %in% c('censpfs','ttcpfs','censos','ttcos', 'collection_event','sample_id','d_pt_sex','public_id')]
+cmia22 <- unique(cmia22)
+###
+my_vars <- c('public_id','davies_based_risk','visit_type','siteXbatch','progression_group','d_dx_amm_age','d_dx_amm_iss_stage','collection_event','sample_id')
+###
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% my_vars)]
+rownames(x) <- NULL ; x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+x$siteXbatch <- NULL
+meta_df <- x
+meta_df <- merge(meta_df,cmia22,by='public_id',all=TRUE) ; rm(cmia22)
+```
+
+### Curent Survival and Progression profiles
+
+```{r message=FALSE, warning=FALSE}
+### subset
+ix <- which(meta_df$davies_based_risk %in% c('standard_risk','high_risk') & meta_df$collection_event %in% 'Baseline')
+tmp_df <- meta_df[ix,]
+```
+
+```{r message=FALSE, warning=FALSE}
+### PFS SURV
+tmp_df_pfs <- surv_pvalue( survfit(Surv(ttcpfs, censpfs==1) ~ davies_based_risk, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+
+### PFS COX 
+x <- coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                 HR = x$table_body$estimate , Marker = 'PFS (ttcpfs, censpfs)' , label=x$table_body$label)  
+
+### SURV OS
+tmp_df_os <- surv_pvalue( survfit(Surv(ttcos, censos==1) ~ davies_based_risk, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+
+### COX OS
+x <- coxph(Surv(ttcos, censos==1) ~ davies_based_risk, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                 HR = x$table_body$estimate , Marker = 'OS (ttcos, censos)' , label=x$table_body$label)  
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_davies_based_risk_clinical_summary.pdf',width = 6,height = 6)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ davies_based_risk, data = tmp_df), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "n",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('orange','skyblue3'))
+###
+ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ davies_based_risk, data = tmp_df), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "n",pval.method = TRUE,
+            xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('orange','skyblue3'))
+dev.off()
+```
+
+### Survival
+
+```{r fig.width = 6, fig.height = 6}
+ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ davies_based_risk, data = tmp_df), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "n",pval.method = TRUE,
+            xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('orange','skyblue3'))
+```
+
+### Sentivity to covariates
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcos, censos==1) ~ davies_based_risk, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcos, censos==1) ~ davies_based_risk + d_dx_amm_age, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcos, censos==1) ~ davies_based_risk + d_pt_sex, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcos, censos==1) ~ davies_based_risk + d_dx_amm_iss_stage, data = tmp_df))
+```
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcos, censos==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcos, censos==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcos, censos==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + batch, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcos, censos==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + batch + site, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE, results='asis'}
+coxph(Surv(ttcos, censos==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + batch + site, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+
+```{r fig.width = 7, fig.height = 9}
+forest_model(coxph(Surv(ttcos, censos==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + batch + site, data = tmp_df))
+```
+
+### Progression
+
+```{r fig.width = 6, fig.height = 6}
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ davies_based_risk, data = tmp_df), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "n",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('orange','skyblue3'))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk + d_dx_amm_age, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk + d_pt_sex, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk + d_dx_amm_iss_stage, data = tmp_df))
+```
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + batch, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE}
+summary(coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + batch + site, data = tmp_df))
+```
+
+```{r message=FALSE, warning=FALSE, results='asis'}
+coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + batch + site, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r fig.width = 7, fig.height = 9}
+forest_model(coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + batch + site, data = tmp_df))
+```
+
+### Prepare single cell populations data (subclusters)
+
+```{r message=FALSE, warning=FALSE}
+rm(x,y,tmp_df)
+###
+ix <- which(meta_df$davies_based_risk %in% c('standard_risk','high_risk') & meta_df$collection_event %in% 'Baseline')
+meta_baseline_df <- meta_df[ix,]
+
+### All populations
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+
+my_doublets <- unique(as.character(file_717_per_cell_md$subcluster_V03072023[file_717_per_cell_md$doublet_pred %in% c('dblet_cluster','poss_dblet_cluster')]))
+
+y <- y[!rownames(y) %in% my_doublets,]
+
+### remove non baseline/relevant
+y <- y[,which(colnames(y) %in% meta_baseline_df$sample_id)]
+
+cell_props_all = DR_data(t(y))
+```
+
+```{r message=FALSE, warning=FALSE}
+identical(meta_baseline_df$sample_id,rownames(cell_props_all))
+```
+
+```{r message=FALSE, warning=FALSE}
+cell_props_all <- cell_props_all[match(meta_baseline_df$sample_id,rownames(cell_props_all)),]
+```
+
+```{r message=FALSE, warning=FALSE}
+identical(meta_baseline_df$sample_id,rownames(cell_props_all))
+```
+
+### Prepare single cell populations data (Subclusters per compartment)
+
+```{r message=FALSE, warning=FALSE}
+### All populations
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+
+my_doublets <- unique(as.character(file_717_per_cell_md$subcluster_V03072023[file_717_per_cell_md$doublet_pred %in% c('dblet_cluster','poss_dblet_cluster')]))
+
+y <- y[!rownames(y) %in% my_doublets,]
+
+y <- y[,which(colnames(y) %in% meta_baseline_df$sample_id)]
+
+Compartment <- c('NkT','BEry','Ery','Myeloid','Plasma') #,'Full'
+cell_proportions <- list()
+for(iii in Compartment){
+  ix <- grep(paste('^',iii,sep=''), rownames(y))
+  z <- y[ix,]
+  cell_proportions[[iii]] = DR_data(t(z))
+}
+cell_props_comp <- do.call(cbind,cell_proportions)
+```
+
+```{r message=FALSE, warning=FALSE}
+identical(meta_baseline_df$sample_id,rownames(cell_props_comp))
+```
+
+```{r message=FALSE, warning=FALSE}
+cell_props_comp <- cell_props_comp[match(meta_baseline_df$sample_id,rownames(cell_props_comp)),]
+```
+
+```{r message=FALSE, warning=FALSE}
+identical(meta_baseline_df$sample_id,rownames(cell_props_comp))
+```
+
+### Prepare Compartments
+
+```{r message=FALSE, warning=FALSE}
+### All populations
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+y <- y[!rownames(y) %in% my_doublets,]
+
+z <- list()
+for(iii in Compartment){
+  ix <- grep(paste('^',iii,sep=''), rownames(y))
+  z[[iii]] <- colSums(y[ix,])
+}    
+z <- do.call(rbind,z)
+cell_compartment = DR_data(t(z))
+### remove non baseline/relevant
+cell_compartment <- cell_compartment[which(rownames(cell_compartment) %in% meta_baseline_df$sample_id),]
+```
+
+```{r message=FALSE, warning=FALSE}
+identical(meta_baseline_df$sample_id,rownames(cell_compartment))
+```
+
+```{r message=FALSE, warning=FALSE}
+cell_compartment <- cell_compartment[match(meta_baseline_df$sample_id,rownames(cell_compartment)),]
+```
+
+```{r message=FALSE, warning=FALSE}
+identical(meta_baseline_df$sample_id,rownames(cell_compartment))
+```
+
+### Stats for all populations 'Compartment' (univariate)
+
+```{r message=FALSE, warning=FALSE}
+comp_fulldf <- cbind(meta_baseline_df,cell_compartment)
+### Make data storage objects
+tmp_list_os <- list() ; tmp_os_cox_list <- list()
+tmp_list_pfs <- list() ; tmp_pfs_cox_list <- list()
+###
+count=1 
+###
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_unsupervised_risk_per_compartment_summary.pdf',width = 6,height = 6)
+for(i in 1:length(Compartment)){
+    tmp_df <- comp_fulldf
+    tmp_df$y <- tmp_df[,paste(Compartment[i])]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25))] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75))] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25)) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5))] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75)) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5))] <- 'Q3'
+    ### PFS Plot
+    print(
+      ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df), 
+                  type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "1",pval.method = TRUE,
+                  xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('deeppink1','deeppink4','skyblue4','skyblue1')) +
+        labs(title = Compartment[i])
+    )
+    ### PFS SURV
+    tmp_df_pfs <- surv_pvalue( survfit(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+    tmp_df_pfs$marker <- paste(Compartment[i])
+    tmp_list_pfs[[count]] <- tmp_df_pfs
+    ### PFS COX 
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label)  
+    tmp_pfs_cox_list[[count]] <- x
+    ### OS Plot
+    print(
+      ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ x, data = tmp_df), 
+                  type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "1",pval.method = TRUE,
+                  xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('deeppink1','deeppink4','skyblue4','skyblue1')) +
+        labs(title = Compartment[i])
+    )
+    ### SURV OS
+    tmp_df_os <- surv_pvalue( survfit(Surv(ttcos, censos==1) ~ x, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+    tmp_df_os$marker <- paste(Compartment[i])
+    tmp_list_os[[count]] <- tmp_df_os
+    ### COX OS
+    x <- coxph(Surv(ttcos, censos==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label)  
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+}
+dev.off()
+### +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+```
+
+### Summary results 'Compartment' PFS
+
+```{r message=FALSE, warning=FALSE}
+### Prepare tables PFS
+tmp_list_pfs <- do.call(rbind,tmp_list_pfs) ; tmp_pfs_cox_list <- do.call(rbind,tmp_pfs_cox_list) 
+rownames(tmp_pfs_cox_list) <- NULL
+tmp_list_pfs$pval <- as.numeric(gsub("p = ","",tmp_list_pfs$pval.txt))
+tmp_list_pfs$pval.txt <- NULL
+###
+colnames(tmp_pfs_cox_list) <- paste('cox',colnames(tmp_pfs_cox_list),sep='_')
+colnames(tmp_pfs_cox_list)[5] <- 'Marker'
+colnames(tmp_list_pfs)[4] <- 'Marker'
+### pfs
+results_cox_pfs_fit_df <- merge(tmp_pfs_cox_list,tmp_list_pfs,by='Marker')
+### pval match
+results_cox_pfs_fit_df$pval_match <- NA
+results_cox_pfs_fit_df$pval_match[results_cox_pfs_fit_df$cox_pval<0.05] <- 'Cox'
+results_cox_pfs_fit_df$pval_match[results_cox_pfs_fit_df$pval<0.05] <- 'LogR'
+results_cox_pfs_fit_df$pval_match[results_cox_pfs_fit_df$pval<0.05 & results_cox_pfs_fit_df$cox_pval<0.05] <- 'Cox+LogR'
+results_cox_pfs_fit_df$sig_cox <- results_cox_pfs_fit_df$cox_pval<0.05
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- results_cox_pfs_fit_df
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$cox_label,sep='.')
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_unsupervised_surv_coxph_compartment_pfs_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='PFS\nCox HR',y='PFS\n-Log10(p-log-rank)') + theme_classic()
+dev.off()
+```
+
+```{r fig.width = 5, fig.height = 3}
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=Marker),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='PFS\nCox HR',y='PFS\n-Log10(p-log-rank)') + theme_classic()
+```
+
+### Summary results 'Compartment' 
+
+```{r message=FALSE, warning=FALSE}
+### Prepare tables PFS
+tmp_list_os <- do.call(rbind,tmp_list_os) ; tmp_os_cox_list <- do.call(rbind,tmp_os_cox_list) 
+rownames(tmp_os_cox_list) <- NULL
+tmp_list_os$pval <- as.numeric(gsub("p = ","",tmp_list_os$pval.txt))
+tmp_list_os$pval.txt <- NULL
+###
+colnames(tmp_os_cox_list) <- paste('cox',colnames(tmp_os_cox_list),sep='_')
+colnames(tmp_os_cox_list)[5] <- 'Marker'
+colnames(tmp_list_os)[4] <- 'Marker'
+### pfs
+results_cox_os_fit_df <- merge(tmp_os_cox_list,tmp_list_os,by='Marker')
+### pval match
+results_cox_os_fit_df$pval_match <- NA
+results_cox_os_fit_df$pval_match[results_cox_os_fit_df$cox_pval<0.05] <- 'Cox'
+results_cox_os_fit_df$pval_match[results_cox_os_fit_df$pval<0.05] <- 'LogR'
+results_cox_os_fit_df$pval_match[results_cox_os_fit_df$pval<0.05 & results_cox_os_fit_df$cox_pval<0.05] <- 'Cox+LogR'
+results_cox_os_fit_df$sig_cox <- results_cox_os_fit_df$cox_pval<0.05
+```
+
+### OS
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- results_cox_os_fit_df
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$cox_label,sep='.')
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_unsupervised_surv_coxph_compartment_os_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='OS\nCox HR',y='OS\n-Log10(p-log-rank)') + theme_classic()
+dev.off()
+```
+
+```{r fig.width = 5, fig.height = 3}
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='OS\nCox HR',y='OS\n-Log10(p-log-rank)') + theme_classic()
+```
+
+### PFS
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- results_cox_pfs_fit_df
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$cox_label,sep='.')
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_unsupervised_surv_coxph_compartment_pfs_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='PFS\nCox HR',y='PFS\n-Log10(p-log-rank)') + theme_classic()
+dev.off()
+```
+
+```{r fig.width = 5, fig.height = 3}
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='PFS\nCox HR',y='PFS\n-Log10(p-log-rank)') + theme_classic()
+```
+
+
+```{r message=FALSE, warning=FALSE, include=TRUE}
+### store
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_compartment_uni.RDS',results_cox_os_fit_df)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_compartment_uni.RDS',results_cox_pfs_fit_df)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_os_compartment_uni.csv',results_cox_os_fit_df)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_pfs_compartment_uni.csv',results_cox_pfs_fit_df)
+### list to store all outcomes
+results_cox_surv_list <- list(os_compartment_uni=results_cox_os_fit_df,
+                              pfs_compartment_uni=results_cox_pfs_fit_df)
+```
+
+### Stats for all populations 'Compartment' (Multivariate)
+
+```{r message=FALSE, warning=FALSE}
+comp_fulldf <- cbind(meta_baseline_df,cell_compartment)
+### Make data storage objects
+tmp_os_cox_list <- list() ; tmp_pfs_cox_list <- list()
+###
+count=1 
+###
+for(i in 1:length(Compartment)){
+    tmp_df <- comp_fulldf
+    tmp_df$y <- tmp_df[,paste(Compartment[i])]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25))] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75))] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25)) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5))] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75)) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5))] <- 'Q3'
+    ### PFS COX 
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label, 
+                     model='Univariate')
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS
+    x <- coxph(Surv(ttcos, censos==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label, 
+                     model='Univariate')  
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex')  
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex')
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + site + batch, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch')  
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + site + batch, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch')  
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex + d_dx_amm_iss_stage')  
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex + d_dx_amm_iss_stage')
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + site + batch + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch + d_pt_sex + d_dx_amm_iss_stage')
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + site + batch + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch + d_pt_sex + d_dx_amm_iss_stage')
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_os_cox_list <- do.call(rbind,tmp_os_cox_list) ; tmp_pfs_cox_list <- do.call(rbind,tmp_pfs_cox_list) 
+rownames(tmp_os_cox_list) <- NULL ; rownames(tmp_pfs_cox_list) <- NULL
+```
+
+```{r fig.width = 5, fig.height = 3}
+tmp_df <- tmp_os_cox_list
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$label,sep='.')
+###
+tmp_df$MarkerV2 <- gsub('d_dx_amm_iss_stage','ISS',tmp_df$MarkerV2) 
+#pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_davies_surv_coxph_compartment_os_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=HR,y=-log10(pval)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[which(tmp_df$pval<0.05),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(x='OS\nCox HR',y='OS\n-Log10(pval') + theme_classic()
+#dev.off()
+```
+
+```{r fig.width = 5, fig.height = 3}
+tmp_df <- tmp_pfs_cox_list
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$label,sep='.')
+###
+tmp_df$MarkerV2 <- gsub('d_dx_amm_iss_stage','ISS',tmp_df$MarkerV2) 
+#pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_davies_surv_coxph_compartment_os_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=HR,y=-log10(pval)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[which(tmp_df$pval<0.05),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(x='PFS\nCox HR',y='PFS\n-Log10(pval') + theme_classic()
+#dev.off()
+```
+
+```{r message=FALSE, warning=FALSE, include=TRUE}
+### store
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_compartment_multi.RDS',tmp_os_cox_list)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_compartment_multi.RDS',tmp_pfs_cox_list)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_os_compartment_multi.csv',tmp_os_cox_list)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_pfs_compartment_multi.csv',tmp_pfs_cox_list)
+### list to store all outcomes
+results_cox_surv_list$os_compartment_multi <- tmp_os_cox_list
+results_cox_surv_list$pfs_compartment_multi <- tmp_pfs_cox_list
+```
+
+### Stats for all populations 'Subclusters all' (Univariate)
+
+```{r message=FALSE, warning=FALSE}
+subcluster_all_fulldf <- cbind(meta_baseline_df,cell_props_all)
+###
+my_vars <- colnames(cell_props_all)
+### Make data storage objects
+tmp_list_os <- list() ; tmp_os_cox_list <- list()
+tmp_list_pfs <- list() ; tmp_pfs_cox_list <- list()
+###
+count=1 
+###
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_unsupervised_sub_clusters_all_summary.pdf',width = 6,height = 6)
+for(i in 1:length(my_vars)){
+    tmp_df <- subcluster_all_fulldf
+    tmp_df$y <- tmp_df[,paste(my_vars[i])]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25))] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75))] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25)) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5))] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75)) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5))] <- 'Q3'
+    ### PFS Plot
+    print(
+      ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df), 
+                  type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "1",pval.method = TRUE,
+                  xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('deeppink1','deeppink4','skyblue4','skyblue1')) +
+        labs(title = my_vars[i])
+    )
+    ### PFS SURV
+    tmp_df_pfs <- surv_pvalue( survfit(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+    tmp_df_pfs$marker <- paste(my_vars[i])
+    tmp_list_pfs[[count]] <- tmp_df_pfs
+    ### PFS COX 
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(my_vars[i]) , label=x$table_body$label)  
+    tmp_pfs_cox_list[[count]] <- x
+    ### OS Plot
+    print(
+      ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ x, data = tmp_df), 
+                  type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "1",pval.method = TRUE,
+                  xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('deeppink1','deeppink4','skyblue4','skyblue1')) +
+        labs(title = my_vars[i])
+    )
+    ### SURV OS
+    tmp_df_os <- surv_pvalue( survfit(Surv(ttcos, censos==1) ~ x, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+    tmp_df_os$marker <- paste(my_vars[i])
+    tmp_list_os[[count]] <- tmp_df_os
+    ### COX OS
+    x <- coxph(Surv(ttcos, censos==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(my_vars[i]) , label=x$table_body$label)  
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+}
+dev.off()
+```
+
+### Summary results 'Subclusters all'
+
+```{r message=FALSE, warning=FALSE}
+### Prepare tables os
+tmp_list_os <- do.call(rbind,tmp_list_os) ; tmp_os_cox_list <- do.call(rbind,tmp_os_cox_list) 
+rownames(tmp_os_cox_list) <- NULL
+tmp_list_os$pval <- as.numeric(gsub("p = ","",tmp_list_os$pval.txt))
+tmp_list_os$pval.txt <- NULL
+###
+colnames(tmp_os_cox_list) <- paste('cox',colnames(tmp_os_cox_list),sep='_')
+colnames(tmp_os_cox_list)[5] <- 'Marker'
+colnames(tmp_list_os)[4] <- 'Marker'
+### pfs
+results_cox_os_fit_df <- merge(tmp_os_cox_list,tmp_list_os,by='Marker')
+### pval match
+results_cox_os_fit_df$pval_match <- NA
+results_cox_os_fit_df$pval_match[results_cox_os_fit_df$cox_pval<0.05] <- 'Cox'
+results_cox_os_fit_df$pval_match[results_cox_os_fit_df$pval<0.05] <- 'LogR'
+results_cox_os_fit_df$pval_match[results_cox_os_fit_df$pval<0.05 & results_cox_os_fit_df$cox_pval<0.05] <- 'Cox+LogR'
+results_cox_os_fit_df$sig_cox <- results_cox_os_fit_df$cox_pval<0.05
+```
+
+
+```{r message=FALSE, warning=FALSE}
+### Prepare tables os
+tmp_list_pfs <- do.call(rbind,tmp_list_pfs) ; tmp_pfs_cox_list <- do.call(rbind,tmp_pfs_cox_list) 
+rownames(tmp_pfs_cox_list) <- NULL
+tmp_list_pfs$pval <- as.numeric(gsub("p = ","",tmp_list_pfs$pval.txt))
+tmp_list_pfs$pval.txt <- NULL
+###
+colnames(tmp_pfs_cox_list) <- paste('cox',colnames(tmp_pfs_cox_list),sep='_')
+colnames(tmp_pfs_cox_list)[5] <- 'Marker'
+colnames(tmp_list_pfs)[4] <- 'Marker'
+### pfs
+results_cox_pfs_fit_df <- merge(tmp_pfs_cox_list,tmp_list_pfs,by='Marker')
+### pval match
+results_cox_pfs_fit_df$pval_match <- NA
+results_cox_pfs_fit_df$pval_match[results_cox_pfs_fit_df$cox_pval<0.05] <- 'Cox'
+results_cox_pfs_fit_df$pval_match[results_cox_pfs_fit_df$pval<0.05] <- 'LogR'
+results_cox_pfs_fit_df$pval_match[results_cox_pfs_fit_df$pval<0.05 & results_cox_pfs_fit_df$cox_pval<0.05] <- 'Cox+LogR'
+results_cox_pfs_fit_df$sig_cox <- results_cox_pfs_fit_df$cox_pval<0.05
+```
+
+### OS
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- results_cox_os_fit_df
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$cox_label,sep='.')
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_unsupervised_surv_coxph_subcluster_all_os_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='OS\nCox HR',y='OS\n-Log10(p-log-rank)') + theme_classic()
+dev.off()
+```
+
+```{r fig.width = 5, fig.height = 3}
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='OS\nCox HR',y='OS\n-Log10(p-log-rank)') + theme_classic()
+```
+
+### PFS
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- results_cox_pfs_fit_df
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$cox_label,sep='.')
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_unsupervised_surv_coxph_subcluster_all_pfs_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='PFS\nCox HR',y='PFS\n-Log10(p-log-rank)') + theme_classic()
+dev.off()
+```
+
+```{r fig.width = 5, fig.height = 3}
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='PFS\nCox HR',y='PFS\n-Log10(p-log-rank)') + theme_classic()
+```
+
+```{r message=FALSE, warning=FALSE, include=TRUE}
+### store
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_subcluster_all_uni.RDS',results_cox_os_fit_df)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_subcluster_all_uni.RDS',results_cox_pfs_fit_df)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_os_subcluster_all_uni.csv',results_cox_os_fit_df)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_pfs_subcluster_all_uni.csv',results_cox_pfs_fit_df)
+### list to store all outcomes
+results_cox_surv_list$os_subcluster_all_unii <- results_cox_os_fit_df
+results_cox_surv_list$pfs_subcluster_all_unii <- results_cox_pfs_fit_df
+```
+
+### Stats for all populations 'Subclusters all' (Multivariate)
+
+```{r message=FALSE, warning=FALSE}
+# subcluster_all_fulldf
+### Make data storage objects
+tmp_os_cox_list <- list() ; tmp_pfs_cox_list <- list()
+###
+Compartment <- colnames(cell_props_all)
+###
+count=1 
+###
+for(i in 1:length(Compartment)){
+    tmp_df <- subcluster_all_fulldf
+    tmp_df$y <- tmp_df[,paste(Compartment[i])]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25))] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75))] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25)) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5))] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75)) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5))] <- 'Q3'
+    ### PFS COX 
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label, 
+                     model='Univariate')
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS
+    x <- coxph(Surv(ttcos, censos==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label, 
+                     model='Univariate')  
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex')  
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex')
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + site + batch, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch')  
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + site + batch, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch')  
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex + d_dx_amm_iss_stage')  
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex + d_dx_amm_iss_stage')
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + site + batch + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch + d_pt_sex + d_dx_amm_iss_stage')
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + site + batch + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch + d_pt_sex + d_dx_amm_iss_stage')
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_os_cox_list <- do.call(rbind,tmp_os_cox_list) ; tmp_pfs_cox_list <- do.call(rbind,tmp_pfs_cox_list) 
+rownames(tmp_os_cox_list) <- NULL ; rownames(tmp_pfs_cox_list) <- NULL
+```
+
+```{r fig.width = 5, fig.height = 3}
+tmp_df <- tmp_os_cox_list
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$label,sep='.')
+###
+tmp_df$MarkerV2 <- gsub('d_dx_amm_iss_stage','ISS',tmp_df$MarkerV2) 
+tmp_df$HR[which(tmp_df$HR<0.1)] <- 0.1
+#pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_davies_surv_coxph_compartment_os_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=HR,y=-log10(pval)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[which(tmp_df$pval<0.05),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(x='OS\nCox HR',y='OS\n-Log10(pval') + theme_classic()
+#dev.off()
+```
+
+```{r fig.width = 5, fig.height = 3}
+tmp_df <- tmp_pfs_cox_list
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$label,sep='.')
+###
+tmp_df$MarkerV2 <- gsub('d_dx_amm_iss_stage','ISS',tmp_df$MarkerV2) 
+tmp_df$HR[which(tmp_df$HR<0.1)] <- 0.1
+#pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_davies_surv_coxph_compartment_os_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=HR,y=-log10(pval)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[which(tmp_df$pval<0.05),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(x='PFS\nCox HR',y='PFS\n-Log10(pval') + theme_classic()
+#dev.off()
+```
+
+```{r message=FALSE, warning=FALSE, include=TRUE}
+### store
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_subcluster_all_multi.RDS',tmp_os_cox_list)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_subcluster_all_multi.RDS',tmp_pfs_cox_list)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_os_subcluster_all_multi.csv',tmp_os_cox_list)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_pfs_subcluster_all_multi.csv',tmp_pfs_cox_list)
+### list to store all outcomes
+results_cox_surv_list$os_subcluster_all_multi <- tmp_os_cox_list
+results_cox_surv_list$pfs_subcluster_all_multi <- tmp_pfs_cox_list
+```
+
+
+### Stats for all populations 'Subclusters per Compartment' (Univariate)
+
+```{r message=FALSE, warning=FALSE}
+subcluster_comp_fulldf <- cbind(meta_baseline_df,cell_props_comp)
+###
+my_vars <- colnames(cell_props_comp)
+### Make data storage objects
+tmp_list_os <- list() ; tmp_os_cox_list <- list()
+tmp_list_pfs <- list() ; tmp_pfs_cox_list <- list()
+###
+count=1 
+###
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_unsupervised_sub_clusters_compartment_summary.pdf',width = 6,height = 6)
+for(i in 1:length(my_vars)){
+    tmp_df <- subcluster_comp_fulldf
+    tmp_df$y <- tmp_df[,paste(my_vars[i])]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE)] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q3'
+    ### PFS Plot
+    print(
+      ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df), 
+                  type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "1",pval.method = TRUE,
+                  xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('deeppink1','deeppink4','skyblue4','skyblue1')) +
+        labs(title = my_vars[i])
+    )
+    ### PFS SURV
+    tmp_df_pfs <- surv_pvalue( survfit(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+    tmp_df_pfs$marker <- paste(my_vars[i])
+    tmp_list_pfs[[count]] <- tmp_df_pfs
+    ### PFS COX 
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(my_vars[i]) , label=x$table_body$label)  
+    tmp_pfs_cox_list[[count]] <- x
+    ### OS Plot
+    print(
+      ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ x, data = tmp_df), 
+                  type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "1",pval.method = TRUE,
+                  xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('deeppink1','deeppink4','skyblue4','skyblue1')) +
+        labs(title = my_vars[i])
+    )
+    ### SURV OS
+    tmp_df_os <- surv_pvalue( survfit(Surv(ttcos, censos==1) ~ x, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+    tmp_df_os$marker <- paste(my_vars[i])
+    tmp_list_os[[count]] <- tmp_df_os
+    ### COX OS
+    x <- coxph(Surv(ttcos, censos==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(my_vars[i]) , label=x$table_body$label)  
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+}
+dev.off()
+```
+
+### Summary results 'Subclusters Compartment'
+
+```{r message=FALSE, warning=FALSE}
+### Prepare tables os
+tmp_list_os <- do.call(rbind,tmp_list_os) ; tmp_os_cox_list <- do.call(rbind,tmp_os_cox_list) 
+rownames(tmp_os_cox_list) <- NULL
+tmp_list_os$pval <- as.numeric(gsub("p = ","",tmp_list_os$pval.txt))
+tmp_list_os$pval.txt <- NULL
+###
+colnames(tmp_os_cox_list) <- paste('cox',colnames(tmp_os_cox_list),sep='_')
+colnames(tmp_os_cox_list)[5] <- 'Marker'
+colnames(tmp_list_os)[4] <- 'Marker'
+### pfs
+results_cox_os_fit_df <- merge(tmp_os_cox_list,tmp_list_os,by='Marker')
+### pval match
+results_cox_os_fit_df$pval_match <- NA
+results_cox_os_fit_df$pval_match[results_cox_os_fit_df$cox_pval<0.05] <- 'Cox'
+results_cox_os_fit_df$pval_match[results_cox_os_fit_df$pval<0.05] <- 'LogR'
+results_cox_os_fit_df$pval_match[results_cox_os_fit_df$pval<0.05 & results_cox_os_fit_df$cox_pval<0.05] <- 'Cox+LogR'
+results_cox_os_fit_df$sig_cox <- results_cox_os_fit_df$cox_pval<0.05
+```
+
+
+```{r message=FALSE, warning=FALSE}
+### Prepare tables pfs
+tmp_list_pfs <- do.call(rbind,tmp_list_pfs) ; tmp_pfs_cox_list <- do.call(rbind,tmp_pfs_cox_list) 
+rownames(tmp_pfs_cox_list) <- NULL
+tmp_list_pfs$pval <- as.numeric(gsub("p = ","",tmp_list_pfs$pval.txt))
+tmp_list_pfs$pval.txt <- NULL
+###
+colnames(tmp_pfs_cox_list) <- paste('cox',colnames(tmp_pfs_cox_list),sep='_')
+colnames(tmp_pfs_cox_list)[5] <- 'Marker'
+colnames(tmp_list_pfs)[4] <- 'Marker'
+### pfs
+results_cox_pfs_fit_df <- merge(tmp_pfs_cox_list,tmp_list_pfs,by='Marker')
+### pval match
+results_cox_pfs_fit_df$pval_match <- NA
+results_cox_pfs_fit_df$pval_match[results_cox_pfs_fit_df$cox_pval<0.05] <- 'Cox'
+results_cox_pfs_fit_df$pval_match[results_cox_pfs_fit_df$pval<0.05] <- 'LogR'
+results_cox_pfs_fit_df$pval_match[results_cox_pfs_fit_df$pval<0.05 & results_cox_pfs_fit_df$cox_pval<0.05] <- 'Cox+LogR'
+results_cox_pfs_fit_df$sig_cox <- results_cox_pfs_fit_df$cox_pval<0.05
+```
+
+### OS
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- results_cox_os_fit_df
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$cox_label,sep='.')
+tmp_df$cox_HR[tmp_df$cox_HR<0.1] <- 0.1
+###
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_unsupervised_surv_coxph_subcluster_comp_os_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='OS\nCox HR',y='OS\n-Log10(p-log-rank)') + theme_classic()
+dev.off()
+```
+
+```{r fig.width = 5, fig.height = 3}
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='OS\nCox HR',y='OS\n-Log10(p-log-rank)') + theme_classic()
+```
+
+### PFS
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- results_cox_pfs_fit_df
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$cox_label,sep='.')
+tmp_df$cox_HR[tmp_df$cox_HR<0.1] <- 0.1
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_unsupervised_surv_coxph_subcluster_comp_pfs_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='PFS\nCox HR',y='PFS\n-Log10(p-log-rank)') + theme_classic()
+dev.off()
+```
+
+```{r fig.width = 5, fig.height = 3}
+ggplot(data=tmp_df)+aes(x=cox_HR,y=-log10(pval),shape=(sig_cox)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[tmp_df$pval_match %in% c('Cox+LogR','LogR','Cox'),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(shape='(Cox)p<0.05',color='p<0.05',x='PFS\nCox HR',y='PFS\n-Log10(p-log-rank)') + theme_classic()
+```
+
+```{r message=FALSE, warning=FALSE, include=TRUE}
+### store
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_subcluster_comp_uni.RDS',results_cox_os_fit_df)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_subcluster_comp_uni.RDS',results_cox_pfs_fit_df)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_os_subcluster_comp_uni.csv',results_cox_os_fit_df)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_pfs_subcluster_comp_uni.csv',results_cox_pfs_fit_df)
+### list to store all outcomes
+results_cox_surv_list$os_subcluster_comp_uni <- results_cox_os_fit_df
+results_cox_surv_list$pfs_subcluster_comp_uni <- results_cox_pfs_fit_df
+```
+
+### Stats for all populations 'Subclusters Comp' (Multivariate)
+
+```{r message=FALSE, warning=FALSE}
+# subcluster_comp_fulldf
+### Make data storage objects
+tmp_os_cox_list <- list() ; tmp_pfs_cox_list <- list()
+###
+Compartment <- colnames(cell_props_comp)
+###
+count=1 
+###
+for(i in 1:length(Compartment)){
+    tmp_df <- subcluster_comp_fulldf
+    tmp_df$y <- tmp_df[,paste(Compartment[i])]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE)] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q3'
+    ### PFS COX 
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label, 
+                     model='Univariate')
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS
+    x <- coxph(Surv(ttcos, censos==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label, 
+                     model='Univariate')  
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex')  
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex')
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + site + batch, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch')  
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + site + batch, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch')  
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex + d_dx_amm_iss_stage')  
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ d_pt_sex + d_dx_amm_iss_stage')
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+    
+    ### PFS COX sex
+    x <- coxph(Surv(ttcpfs, censpfs==1) ~ x + site + batch + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch + d_pt_sex + d_dx_amm_iss_stage')
+    tmp_pfs_cox_list[[count]] <- x
+    ### COX OS sex
+    x <- coxph(Surv(ttcos, censos==1) ~ x + site + batch + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+    x <- data.frame( pval = x$table_body$p.value, CI95_high = x$table_body$conf.high, CI95_low = x$table_body$conf.low,
+                     HR = x$table_body$estimate , Marker = paste(Compartment[i]) , label=x$table_body$label,
+                     model='+ site + batch + d_pt_sex + d_dx_amm_iss_stage')
+    tmp_os_cox_list[[count]] <- x
+    
+    count=count+1
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_os_cox_list <- do.call(rbind,tmp_os_cox_list) ; tmp_pfs_cox_list <- do.call(rbind,tmp_pfs_cox_list) 
+rownames(tmp_os_cox_list) <- NULL ; rownames(tmp_pfs_cox_list) <- NULL
+```
+
+```{r fig.width = 5, fig.height = 3}
+tmp_df <- tmp_os_cox_list
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$label,sep='.')
+###
+tmp_df$MarkerV2 <- gsub('d_dx_amm_iss_stage','ISS',tmp_df$MarkerV2) 
+tmp_df$HR[which(tmp_df$HR<0.1)] <- 0.1
+#pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_davies_surv_coxph_compartment_os_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=HR,y=-log10(pval)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[which(tmp_df$pval<0.05),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(x='OS\nCox HR',y='OS\n-Log10(pval') + theme_classic()
+#dev.off()
+```
+
+```{r fig.width = 5, fig.height = 3}
+tmp_df <- tmp_pfs_cox_list
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$label,sep='.')
+###
+tmp_df$MarkerV2 <- gsub('d_dx_amm_iss_stage','ISS',tmp_df$MarkerV2) 
+tmp_df$HR[which(tmp_df$HR<0.1)] <- 0.1
+#pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_davies_surv_coxph_compartment_os_summary.pdf',width = 5,height = 3)
+ggplot(data=tmp_df)+aes(x=HR,y=-log10(pval)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  #scale_color_manual(values = c('deeppink1','darkorange')) + 
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[which(tmp_df$pval<0.05),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(x='PFS\nCox HR',y='PFS\n-Log10(pval') + theme_classic()
+#dev.off()
+```
+
+```{r message=FALSE, warning=FALSE, include=TRUE}
+### store
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_subcluster_comp_multi.RDS',tmp_os_cox_list)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_subcluster_comp_multi.RDS',tmp_pfs_cox_list)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_os_subcluster_comp_multi.csv',tmp_os_cox_list)
+write.csv(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/tables/results_cox_surv_pfs_subcluster_comp_multi.csv',tmp_pfs_cox_list)
+### list to store all outcomes
+results_cox_surv_list$os_subcluster_comp_multi <- tmp_os_cox_list
+results_cox_surv_list$pfs_subcluster_comp_multi <- tmp_pfs_cox_list
+```
+
+```{r message=FALSE, warning=FALSE}
+### clean space
+rm(list=setdiff(ls(), c('results_cox_surv_list','cellprop_fulldf','cell_props_all','cell_props_comp','meta_baseline_df','subcluster_all_fulldf','subcluster_comp_fulldf') ))
+```
+
+### Compare markers significant between stat experiments (OS all subclusters)
+
+```{r message=FALSE, warning=FALSE}
+###
+a<-results_cox_surv_list$os_subcluster_all_multi
+b<-results_cox_surv_list$os_subcluster_all_unii
+
+x<-list(multi=unique(a$Marker[which(a$pval<0.05 & ! a$label %in% c('d_dx_amm_iss_stage','B2') & ! a$model %in% 'Univariate')]),
+uni=unique(b$Marker[which(b$pval<0.05)]))
+
+subcluster_all_sig_markers <- Reduce(intersect,x)
+```
+
+```{r message=FALSE, warning=FALSE}
+subcluster_all_sig_markers
+```
+
+### Compare markers significant between stat experiments (OS per compartment)
+
+```{r message=FALSE, warning=FALSE}
+a<-results_cox_surv_list$os_subcluster_comp_multi
+b<-results_cox_surv_list$os_subcluster_comp_uni
+
+x<-list(multi=unique(a$Marker[which(a$pval<0.05 & ! a$label %in% c('d_dx_amm_iss_stage','B2') & ! a$model %in% 'Univariate')]),
+        uni=unique(b$Marker[which(b$pval<0.05)]))
+
+subcluster_comp_sig_markers <- Reduce(intersect,x)
+```
+
+```{r message=FALSE, warning=FALSE}
+subcluster_comp_sig_markers
+```
+
+Significant between both All and Compartment models
+
+```{r message=FALSE, warning=FALSE}
+x<-list(all=subcluster_all_sig_markers,comp=subcluster_comp_sig_markers)
+final_list_os <- Reduce(intersect,x)
+final_list_os
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+```
+
+### Compare markers significant between stat experiments (PFS all subclusters)
+
+```{r message=FALSE, warning=FALSE}
+###
+a<-results_cox_surv_list$pfs_subcluster_all_multi
+b<-results_cox_surv_list$pfs_subcluster_all_unii
+
+x<-list(multi=unique(a$Marker[which(a$pval<0.05 & ! a$label %in% c('d_dx_amm_iss_stage','B2') & ! a$model %in% 'Univariate')]),
+uni=unique(b$Marker[which(b$pval<0.05)]))
+
+subcluster_all_sig_markers_pfs <- Reduce(intersect,x)
+```
+
+```{r message=FALSE, warning=FALSE}
+subcluster_all_sig_markers_pfs
+```
+
+### Compare markers significant between stat experiments (PFS per compartment)
+
+```{r message=FALSE, warning=FALSE}
+a<-results_cox_surv_list$pfs_subcluster_comp_multi
+b<-results_cox_surv_list$pfs_subcluster_comp_uni
+
+x<-list(multi=unique(a$Marker[which(a$pval<0.05 & ! a$label %in% c('d_dx_amm_iss_stage','B2') & ! a$model %in% 'Univariate')]),
+        uni=unique(b$Marker[which(b$pval<0.05)]))
+
+subcluster_comp_sig_markers_pfs <- Reduce(intersect,x)
+```
+
+```{r message=FALSE, warning=FALSE}
+subcluster_comp_sig_markers_pfs
+```
+
+```{r message=FALSE, warning=FALSE}
+x<-list(all=subcluster_all_sig_markers_pfs,comp=subcluster_comp_sig_markers_pfs)
+final_list_pfs <- Reduce(intersect,x)
+final_list_pfs
+```
+
+Subclusters representation in data
+
+```{r message=FALSE, warning=FALSE}
+file_717_per_cell_md <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/per_cell_md.rds')
+x <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(x) <- 'matrix' ; x[x>0]<-1 ; x <- rowSums(x) ; x <- sort(x)
+sample_size_df <- data.frame(subcluster=names(x),samples=as.numeric(x))
+sample_size_df$more_than_median <- sample_size_df$samples > median(sample_size_df$samples)
+```
+
+```{r message=FALSE, warning=FALSE}
+final_list_pfs[which(final_list_pfs %in% sample_size_df$subcluster[which(sample_size_df$more_than_median %in% TRUE )])]
+```
+
+```{r message=FALSE, warning=FALSE}
+final_list_os[which(final_list_os %in% sample_size_df$subcluster[which(sample_size_df$more_than_median %in% TRUE )])]
+```
+
+### Testing significant pops (OS)
+
+### NkT.1.4
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf
+    tmp_df$y <- tmp_df[,"NkT.1.4"]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE)] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q3'
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+coxph(Surv(ttcos, censos==1) ~ x, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+coxph(Surv(ttcos, censos==1) ~ x, data = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex, data = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage, data = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site, data = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+forest_model( coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+### BEry.1
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf
+    tmp_df$y <- tmp_df[,"BEry.1"]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE)] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q3'
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+forest_model( coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+### BEry.2
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf
+    tmp_df$y <- tmp_df[,"BEry.2"]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE)] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q3'
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+forest_model( coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+### NkT.6
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf
+    tmp_df$y <- tmp_df[,"NkT.6"]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE)] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q3'
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+forest_model( coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+### NkT.3.1
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf
+    tmp_df$y <- tmp_df[,"NkT.3.1"]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE)] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q3'
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX OS
+forest_model( coxph(Surv(ttcos, censos==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+### Testing significant pops (PFS)
+
+### Myeloid.5
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf
+    tmp_df$y <- tmp_df[,"Myeloid.5"]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE)] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q3'
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX pfs
+coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+### PFS COX 
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+### Myeloid.12
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf
+    tmp_df$y <- tmp_df[,"Myeloid.12"]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE)] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q3'
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX pfs
+coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+### PFS COX 
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+### BEry.3
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf
+    tmp_df$y <- tmp_df[,"BEry.3"]
+    tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE)] <- 'Q1'
+    tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q2'
+    tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q3'
+```
+
+```{r message=FALSE, warning=FALSE}
+### COX pfs
+coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+### PFS COX 
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+### Myeloid.12 for example nomogram
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf
+    #tmp_df$y <- tmp_df[,"Myeloid.12"]
+    #tmp_df$x[tmp_df$y < quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE)] <- 'Q1'
+    #tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    #tmp_df$x[tmp_df$y >= quantile(tmp_df$y, probs=c(0.25),na.rm = TRUE) & tmp_df$y <= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q2'
+    #tmp_df$x[tmp_df$y <= quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE) & tmp_df$y >= quantile(tmp_df$y, probs=c(0.5),na.rm = TRUE)] <- 'Q3'
+    tmp_df$y <- tmp_df[,"Myeloid.12"]
+    tmp_df$x <- 'Low'
+    tmp_df$x[tmp_df$y > median(tmp_df$y)] <- 'High'
+    #tmp_df$x[tmp_df$y > mean(tmp_df$y)] <- 'High'
+    #tmp_df$x[tmp_df$y > quantile(tmp_df$y, probs=c(0.75),na.rm = TRUE)] <- 'Q4'
+    #tmp_df$x[tmp_df$y > 0.01] <- 'Extreme'
+```
+
+```{r message=FALSE, warning=FALSE}
+### PFS COX 
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+### PFS COX 
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + davies_based_risk + d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+### PFS COX 
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + davies_based_risk + d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+library(rms)
+
+tmp_df$Myeloid.12.Score <- factor(tmp_df$x,levels = c('Low','High'))
+tmp_df$Cytogenetic.Risk <- as.character(tmp_df$davies_based_risk)
+tmp_df$Cytogenetic.Risk[tmp_df$Cytogenetic.Risk %in% 'standard_risk'] <- 'Standard'
+tmp_df$Cytogenetic.Risk[tmp_df$Cytogenetic.Risk %in% 'high_risk'] <- 'High'
+tmp_df$Cytogenetic.Risk <- factor(tmp_df$Cytogenetic.Risk,levels = c('Standard','High'))
+tmp_df$Sex <- factor(tmp_df$d_pt_sex,levels = c('female','male'))
+tmp_df$ISS.Stage <- tmp_df$d_dx_amm_iss_stage
+tmp_df$Age <- tmp_df$d_dx_amm_age
+
+tmp_df_V2 <- tmp_df[,which(colnames(tmp_df) %in% c('censpfs','Myeloid.12.Score','Cytogenetic.Risk','Sex','ISS.Stage','Age'))]
+
+ddist <- datadist(tmp_df_V2)
+options(datadist='ddist')
+
+mod.bi <- lrm(censpfs ~ Myeloid.12.Score + Cytogenetic.Risk + ISS.Stage + Age , tmp_df_V2, x=TRUE)
+
+nom.bi <- nomogram(mod.bi,#lp.at=seq(-3,4,by=0.5),
+                   fun = plogis, #fun=function(x)1/(1+exp(-x)),#fun.at=c(.001,.01,.05,seq(.1,.9,by=.1),.95,.99,.999),
+                   funlabel="Risk of Progression" #conf.int=c(0.1,0.5),#abbrev=FALSE,#minlength=1,lp=F
+                   )
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+#pdf(file="risk.nonogram.pdf",width = 10,height = 10)
+plot(nom.bi,col.grid = gray(c(0.8, 0.95)))
+#dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file="/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/myeloid12.progressio.risk.nonogram.pdf",width = 7.5,height = 5)
+plot(nom.bi,
+     col.grid = gray(c(0.8, 0.95)))
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+#Predict(mod.bi)
+tmp_df$pred <- predict(object = mod.bi, tmp_df_V2[,-1],se.fit = TRUE,type="fitted.ind")
+tmp_df$pred[tmp_df$pred > 0.6] <- 'Integrated High Risk'
+tmp_df$pred[!tmp_df$pred %in% 'Integrated High Risk'] <- 'Integrated Low Risk'
+```
+
+```{r message=FALSE, warning=FALSE}
+### PFS COX 
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ pred + d_pt_sex + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+pdf(file="/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/integrated.cytogenetic.myeloid12.progression.risk.survival.pdf",width = 6,height = 6)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "n",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('darkgreen','purple'))
+dev.off()
+```
+
+```{r   fig.width = 6, fig.height = 6,}
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "n",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('darkgreen','purple'))
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_list.RDS',results_cox_surv_list)
+```

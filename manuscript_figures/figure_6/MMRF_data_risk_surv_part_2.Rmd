@@ -1,0 +1,825 @@
+---
+title: "MMRF Unsupervised Risk Scores"
+author: "Edgar Gonzalez-Kozlova"
+date: "Nov10 2023"
+output: 
+  html_document:
+  toc: true
+  toc_depth: 2
+  toc_float: true
+  ighlight: espresso
+number_sections: yes
+theme: cerulean
+---
+
+# Start
+
+## Load Libraries and set working directory
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hide'}
+### 
+libs<-c('scater','loomR','Seurat','patchwork','SeuratDisk','monocle3','ggpubr','cowplot','ggplot2','ggbeeswarm','clusterProfiler',
+        'monocle3','limma','edgeR','fitdistrplus','factoextra','ggrepel','tidyverse','pheatmap','reshape2','ComplexHeatmap','survRM2',
+        "survminer","survival","ggalluvial",'gtsummary','variancePartition','DirichletReg','cowsay','emmeans','forestmodel')
+lapply(libs, require, character.only = TRUE) ; rm(libs)
+### 
+setwd("/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/")
+```
+
+```{r message=FALSE, warning=FALSE}
+### pops
+file_717_per_cell_md <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/1110_per_cell_md.rds')
+x <- table(file_717_per_cell_md$subcluster_V03072023[file_717_per_cell_md$visit_type %in% 'baseline_diagnosis'],
+           file_717_per_cell_md$sample_id[file_717_per_cell_md$visit_type %in% 'baseline_diagnosis'])
+class(x) <- 'matrix' ; x[x>0]<-1 ; x <- rowSums(x) ; x <- sort(x)
+sample_size_df <- data.frame(subcluster=names(x),samples=as.numeric(x))
+sample_size_df$more_than_median <- sample_size_df$samples > median(sample_size_df$samples)
+sample_size_df$more_than_q1 <- sample_size_df$samples > quantile(sample_size_df$samples, probs=c(0.25))
+```
+
+
+```{r message=FALSE, warning=FALSE}
+### Compartment
+cox_surv_os_compartment_multi <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_compartment_multi.RDS')
+cox_surv_pfs_compartment_multi <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_compartment_multi.RDS')
+
+cox_surv_os_compartment_uni <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_compartment_uni.RDS')
+cox_surv_pfs_compartment_uni <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_compartment_uni.RDS')
+
+### OS
+cox_surv_os_subcluster_comp_multi <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_subcluster_comp_multi.RDS')
+cox_surv_os_subcluster_comp_uni <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_subcluster_comp_uni.RDS')
+
+cox_surv_os_subcluster_all_multi <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_subcluster_all_multi.RDS')
+cox_surv_os_subcluster_all_uni <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_os_subcluster_all_uni.RDS')
+
+### PFS
+cox_surv_pfs_subcluster_comp_multi <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_subcluster_comp_multi.RDS')
+cox_surv_pfs_subcluster_comp_uni <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_subcluster_comp_uni.RDS')
+
+cox_surv_pfs_subcluster_all_multi <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_subcluster_all_multi.RDS')
+cox_surv_pfs_subcluster_all_uni <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/results_cox_surv_pfs_subcluster_all_uni.RDS')
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- cox_surv_pfs_subcluster_all_multi
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$label,sep='.')
+tmp_df$MarkerV2 <- gsub('d_dx_amm_iss_stage','ISS',tmp_df$MarkerV2) 
+tmp_df$HR[which(tmp_df$HR<0.1)] <- 0.1
+for(i in 1:nrow(tmp_df)){tmp_df$fdr[i] <- p.adjust(tmp_df$pval[i],n = length(table(tmp_df$Marker))) }
+```
+
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_cox_surv_pfs_subcluster_all_multi_summary_pval.pdf',width = 10,height = 8)
+ggplot(data=tmp_df)+aes(x=HR,y=-log10(pval)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[which(tmp_df$pval<0.05),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(x='PFS\nCox HR',y='PFS\n-Log10(pval)') + theme_classic()
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_cox_surv_pfs_subcluster_all_multi_summary_fdr.pdf',width = 10,height = 8)
+ggplot(data=tmp_df)+aes(x=HR,y=-log10(fdr)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[which(tmp_df$fdr<0.05),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(x='PFS\nCox HR',y='PFS\n-Log10(FDR)') + theme_classic()
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- cox_surv_pfs_subcluster_comp_multi
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$label,sep='.')
+tmp_df$MarkerV2 <- gsub('d_dx_amm_iss_stage','ISS',tmp_df$MarkerV2) 
+tmp_df$HR[which(tmp_df$HR<0.1)] <- 0.1
+for(i in 1:nrow(tmp_df)){tmp_df$fdr[i] <- p.adjust(tmp_df$pval[i],n = length(table(tmp_df$Marker))) }
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_cox_surv_pfs_subcluster_comp_multi_summary_pval.pdf',width = 10,height = 8)
+ggplot(data=tmp_df)+aes(x=HR,y=-log10(pval)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[which(tmp_df$pval<0.05),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(x='PFS\nCox HR',y='PFS\n-Log10(pval)') + theme_classic()
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/clinical_cox_surv_pfs_subcluster_comp_multi_summary_fdr.pdf',width = 10,height = 8)
+ggplot(data=tmp_df)+aes(x=HR,y=-log10(fdr)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[which(tmp_df$fdr<0.05),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(x='PFS\nCox HR',y='PFS\n-Log10(FDR)') + theme_classic()
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- cox_surv_pfs_subcluster_comp_multi
+tmp_df$MarkerV2 <- paste(tmp_df$Marker,tmp_df$label,sep='.')
+tmp_df$MarkerV2 <- gsub('d_dx_amm_iss_stage','ISS',tmp_df$MarkerV2) 
+tmp_df$HR[which(tmp_df$HR<0.1)] <- 0.1
+```
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data=tmp_df)+aes(x=HR,y=-log10(pval)) + geom_point() + 
+  geom_hline(yintercept = 1.3,linetype=2,color='red') +
+  geom_vline(xintercept = 1,linetype=2,color='black') +
+  scale_x_log10() +
+  geom_text_repel(data=tmp_df[which(tmp_df$pval<0.05),],aes(label=MarkerV2),show.legend = F,force = 10,size=3) +
+  labs(x='PFS\nCox HR',y='PFS\n-Log10(pval') + theme_classic()
+```
+
+```{r message=FALSE, warning=FALSE}
+### all
+a<-cox_surv_pfs_subcluster_all_multi ; b<-cox_surv_pfs_subcluster_all_uni
+x<-list(multi=unique(a$Marker[which(a$pval<0.05 & ! a$label %in% c('d_dx_amm_iss_stage','B2') & ! a$model %in% 'Univariate')]),
+        uni=unique(b$Marker[which(b$pval<0.05)]))
+subcluster_all_sig_markers_pfs <- Reduce(intersect,x)
+subcluster_all_sig_markers_pfs
+```
+
+```{r message=FALSE, warning=FALSE}
+### comp
+a<-cox_surv_pfs_subcluster_comp_multi ; b<-cox_surv_pfs_subcluster_comp_uni
+x<-list(multi=unique(a$Marker[which(a$pval<0.05 & ! a$label %in% c('d_dx_amm_iss_stage','B2') & ! a$model %in% 'Univariate')]),
+        uni=unique(b$Marker[which(b$pval<0.05)]))
+subcluster_comp_sig_markers_pfs <- Reduce(intersect,x)
+subcluster_comp_sig_markers_pfs
+```
+
+```{r message=FALSE, warning=FALSE}
+### final pfs
+x<-list(all=subcluster_all_sig_markers_pfs,comp=subcluster_comp_sig_markers_pfs)
+final_list_pfs <- Reduce(intersect,x)
+final_list_pfs
+```
+
+```{r message=FALSE, warning=FALSE}
+### all
+a<-cox_surv_os_subcluster_all_multi ; b<-cox_surv_os_subcluster_all_uni
+x<-list(multi=unique(a$Marker[which(a$pval<0.05 & ! a$label %in% c('d_dx_amm_iss_stage','B2') & ! a$model %in% 'Univariate')]),
+        uni=unique(b$Marker[which(b$pval<0.05)]))
+subcluster_all_sig_markers_os <- Reduce(intersect,x)
+subcluster_all_sig_markers_os
+```
+
+```{r message=FALSE, warning=FALSE}
+### comp
+a<-cox_surv_os_subcluster_comp_multi ; b<-cox_surv_os_subcluster_comp_uni
+x<-list(multi=unique(a$Marker[which(a$pval<0.05 & ! a$label %in% c('d_dx_amm_iss_stage','B2') & ! a$model %in% 'Univariate')]),
+        uni=unique(b$Marker[which(b$pval<0.05)]))
+subcluster_comp_sig_markers_os <- Reduce(intersect,x)
+subcluster_comp_sig_markers_os
+```
+
+```{r message=FALSE, warning=FALSE}
+### final pfs
+x<-list(all=subcluster_all_sig_markers_os,comp=subcluster_comp_sig_markers_os)
+final_list_os <- Reduce(intersect,x)
+Reduce(intersect,list(a=final_list_pfs,b=final_list_os))
+```
+
+```{r message=FALSE, warning=FALSE}
+final_list_pfs[which(final_list_pfs %in% sample_size_df$subcluster[which(sample_size_df$more_than_median %in% TRUE )])]
+```
+
+```{r message=FALSE, warning=FALSE}
+final_list_pfs[which(final_list_pfs %in% sample_size_df$subcluster[which(sample_size_df$more_than_q1 %in% TRUE )])]
+```
+
+```{r message=FALSE, warning=FALSE}
+final_list_os[which(final_list_os %in% sample_size_df$subcluster[which(sample_size_df$more_than_median %in% TRUE )])]
+```
+
+```{r message=FALSE, warning=FALSE}
+final_list_os[which(final_list_os %in% sample_size_df$subcluster[which(sample_size_df$more_than_q1 %in% TRUE )])]
+```
+
+```{r message=FALSE, warning=FALSE}
+### clinical
+load(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/clinical_metadata_IA22_Feb03_release.RData')
+###
+cmia22 <- clinical_metadata_IA22_Feb03_release[which(clinical_metadata_IA22_Feb03_release$public_id %in% file_717_per_cell_md$public_id),]
+cmia22 <- cmia22[,colnames(cmia22) %in% c('censpfs','ttcpfs','censos','ttcos', 'collection_event','sample_id','d_pt_sex','public_id')]
+cmia22 <- unique(cmia22)
+###
+my_vars <- c('public_id','davies_based_risk','visit_type','siteXbatch','progression_group','d_dx_amm_age','d_dx_amm_iss_stage','collection_event','sample_id')
+###
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% my_vars)]
+rownames(x) <- NULL ; x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+x$siteXbatch <- NULL
+meta_df <- x
+meta_df <- merge(meta_df,cmia22,by='public_id',all=TRUE) ; rm(cmia22)
+###
+ix <- which(meta_df$davies_based_risk %in% c('standard_risk','high_risk') & meta_df$collection_event %in% 'Baseline')
+meta_baseline_df <- meta_df[ix,] ; rm(meta_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+### COMP
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+my_doublets <- unique(as.character(file_717_per_cell_md$subcluster_V03072023[file_717_per_cell_md$doublet_pred %in% c('dblet_cluster','poss_dblet_cluster')]))
+y <- y[!rownames(y) %in% my_doublets,]
+y <- y[,which(colnames(y) %in% meta_baseline_df$sample_id)]
+Compartment <- c('NkT','BEry','Ery','Myeloid','Plasma') #,'Full'
+cell_proportions <- list()
+for(iii in Compartment){
+  ix <- grep(paste('^',iii,sep=''), rownames(y))
+  z <- y[ix,]
+  cell_proportions[[iii]] = DR_data(t(z))
+}
+cell_props_comp <- do.call(cbind,cell_proportions)
+###
+subcluster_comp_fulldf <- cbind(meta_baseline_df,cell_props_comp)
+```
+
+```{r message=FALSE, warning=FALSE}
+### All populations
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+my_doublets <- unique(as.character(file_717_per_cell_md$subcluster_V03072023[file_717_per_cell_md$doublet_pred %in% c('dblet_cluster','poss_dblet_cluster')]))
+y <- y[!rownames(y) %in% my_doublets,]
+### remove non baseline/relevant
+y <- y[,which(colnames(y) %in% meta_baseline_df$sample_id)]
+cell_props_all = DR_data(t(y))
+```
+
+```{r message=FALSE, warning=FALSE}
+identical(meta_baseline_df$sample_id,rownames(cell_props_all))
+```
+
+```{r message=FALSE, warning=FALSE}
+cell_props_all <- cell_props_all[match(meta_baseline_df$sample_id,rownames(cell_props_all)),]
+identical(meta_baseline_df$sample_id,rownames(cell_props_all))
+```
+
+```{r message=FALSE, warning=FALSE}
+subcluster_all_fulldf <- cbind(meta_baseline_df,cell_props_all)
+
+### function to label quartiles
+get_four_quantiles <- function(p,x){
+  y <- x[,p] ; z <- x[,p]
+  z[y < quantile(y, probs=c(0.25))] <- 'Q1'
+  z[y > quantile(y, probs=c(0.75))] <- 'Q4'
+  z[y >= quantile(y, probs=c(0.25)) & y <= quantile(y, probs=c(0.5))] <- 'Q2'
+  z[y <= quantile(y, probs=c(0.75)) & y >= quantile(y, probs=c(0.5))] <- 'Q3'
+  return(z)  
+}
+
+### function to label medians
+get_median <- function(p,x){
+  y <- x[,p] ; z <- rep('Low',length(y))
+  z[y > median(y)] <- 'High'  
+  return(z)
+}
+```
+
+
+```{r message=FALSE, warning=FALSE}
+#[1] "BEry.1"  "BEry.2"  "NkT.1.4" "NkT.3.1" "NkT.6"  #[1] "BEry.1"    "BEry.3"    "Myeloid.5" "NkT.6"   
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf    
+tmp_df$x <- get_four_quantiles(p = "Myeloid.5",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_all_fulldf
+tmp_df$x <- get_four_quantiles(p = "Myeloid.5",x = tmp_df)
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf    
+tmp_df$x <- get_four_quantiles(p = "NkT.6",x = tmp_df)
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_all_fulldf
+tmp_df$x <- get_four_quantiles(p = "NkT.6",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) ) + labs(title = paste('PFS',sep = ':'))
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf    
+tmp_df$x <- get_four_quantiles(p = "NkT.3.1",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_all_fulldf
+tmp_df$x <- get_four_quantiles(p = "NkT.3.1",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) ) + labs(title = paste('PFS',sep = ':'))
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf    
+tmp_df$x <- get_four_quantiles(p = "NkT.1.4",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+````
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_all_fulldf
+tmp_df$x <- get_four_quantiles(p = "NkT.1.4",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) ) + labs(title = paste('PFS',sep = ':'))
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf    
+tmp_df$x <- get_four_quantiles(p = "BEry.1",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_all_fulldf
+tmp_df$x <- get_four_quantiles(p = "BEry.1",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf    
+tmp_df$x <- get_four_quantiles(p = "BEry.2",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_all_fulldf
+tmp_df$x <- get_four_quantiles(p = "BEry.2",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf    
+tmp_df$x <- get_four_quantiles(p = "BEry.3",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_all_fulldf
+tmp_df$x <- get_four_quantiles(p = "BEry.3",x = tmp_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ x + d_pt_sex + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+library(rms)
+### "BEry.1"  "BEry.2"  "NkT.1.4" "NkT.3.1"   "BEry.3"    "Myeloid.5" "NkT.6"   
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_all_fulldf
+tmp_df$Myeloid.5.Score <- get_median(p = "Myeloid.5",x = tmp_df)
+tmp_df$Myeloid.5.Score <- factor(tmp_df$Myeloid.5.Score,levels = c('Low','High'))
+tmp_df$NkT.6.Score <- get_median(p = "NkT.6",x = tmp_df)
+tmp_df$NkT.6.Score <- factor(tmp_df$NkT.6.Score,levels = c('Low','High'))
+tmp_df$NkT.1.4.Score <- get_median(p = "NkT.1.4",x = tmp_df)
+tmp_df$NkT.1.4.Score <- factor(tmp_df$NkT.1.4.Score,levels = c('Low','High'))
+tmp_df$NkT.3.1.Score <- get_median(p = "NkT.3.1",x = tmp_df)
+tmp_df$NkT.3.1.Score <- factor(tmp_df$NkT.3.1.Score,levels = c('Low','High'))
+tmp_df$BEry.1.Score <- get_median(p = "BEry.1",x = tmp_df)
+tmp_df$BEry.1.Score <- factor(tmp_df$BEry.1.Score,levels = c('Low','High'))
+tmp_df$BEry.2.Score <- get_median(p = "BEry.2",x = tmp_df)
+tmp_df$BEry.2.Score <- factor(tmp_df$BEry.2.Score,levels = c('Low','High'))
+tmp_df$BEry.3.Score <- get_median(p = "BEry.3",x = tmp_df)
+tmp_df$BEry.3.Score <- factor(tmp_df$BEry.3.Score,levels = c('Low','High'))
+tmp_df$Plasma.4.Score <- get_median(p = "Plasma.4",x = tmp_df)
+tmp_df$Plasma.4.Score <- factor(tmp_df$Plasma.4.Score,levels = c('Low','High'))
+
+tmp_df$Cytogenetic.Risk <- as.character(tmp_df$davies_based_risk)
+tmp_df$Cytogenetic.Risk[tmp_df$Cytogenetic.Risk %in% 'standard_risk'] <- 'Standard'
+tmp_df$Cytogenetic.Risk[tmp_df$Cytogenetic.Risk %in% 'high_risk'] <- 'High'
+tmp_df$Cytogenetic.Risk <- factor(tmp_df$Cytogenetic.Risk,levels = c('Standard','High'))
+tmp_df$Sex <- factor(tmp_df$d_pt_sex,levels = c('female','male'))
+tmp_df$ISS.Stage <- tmp_df$d_dx_amm_iss_stage
+tmp_df$Age <- tmp_df$d_dx_amm_age
+
+tmp_ALL_df <- tmp_df
+```
+
+```{r message=FALSE, warning=FALSE}
+ix<-grep('Score',colnames(tmp_ALL_df))
+colnames(tmp_ALL_df)[ix]
+x<-tmp_ALL_df[,ix]
+for(i in 1:ncol(x)){x[,i]<-as.numeric(x[,i])}
+```
+
+```{r message=FALSE, warning=FALSE}
+pheatmap::pheatmap(cor(x))
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_comp_fulldf
+tmp_df$Myeloid.5.Score <- get_median(p = "Myeloid.5",x = tmp_df)
+tmp_df$Myeloid.5.Score <- factor(tmp_df$Myeloid.5.Score,levels = c('Low','High'))
+tmp_df$NkT.6.Score <- get_median(p = "NkT.6",x = tmp_df)
+tmp_df$NkT.6.Score <- factor(tmp_df$NkT.6.Score,levels = c('Low','High'))
+tmp_df$NkT.1.4.Score <- get_median(p = "NkT.1.4",x = tmp_df)
+tmp_df$NkT.1.4.Score <- factor(tmp_df$NkT.1.4.Score,levels = c('Low','High'))
+tmp_df$NkT.3.1.Score <- get_median(p = "NkT.3.1",x = tmp_df)
+tmp_df$NkT.3.1.Score <- factor(tmp_df$NkT.3.1.Score,levels = c('Low','High'))
+tmp_df$BEry.1.Score <- get_median(p = "BEry.1",x = tmp_df)
+tmp_df$BEry.1.Score <- factor(tmp_df$BEry.1.Score,levels = c('Low','High'))
+tmp_df$BEry.2.Score <- get_median(p = "BEry.2",x = tmp_df)
+tmp_df$BEry.2.Score <- factor(tmp_df$BEry.2.Score,levels = c('Low','High'))
+tmp_df$BEry.3.Score <- get_median(p = "BEry.3",x = tmp_df)
+tmp_df$BEry.3.Score <- factor(tmp_df$BEry.3.Score,levels = c('Low','High'))
+tmp_df$Plasma.4[is.na(tmp_df$Plasma.4)] <- 0
+tmp_df$Plasma.4.Score <- get_median(p = "Plasma.4",x = tmp_df)
+tmp_df$Plasma.4.Score <- factor(tmp_df$Plasma.4.Score,levels = c('Low','High'))
+tmp_df$Cytogenetic.Risk <- as.character(tmp_df$davies_based_risk)
+tmp_df$Cytogenetic.Risk[tmp_df$Cytogenetic.Risk %in% 'standard_risk'] <- 'Standard'
+tmp_df$Cytogenetic.Risk[tmp_df$Cytogenetic.Risk %in% 'high_risk'] <- 'High'
+tmp_df$Cytogenetic.Risk <- factor(tmp_df$Cytogenetic.Risk,levels = c('Standard','High'))
+tmp_df$Sex <- factor(tmp_df$d_pt_sex,levels = c('female','male'))
+tmp_df$ISS.Stage <- tmp_df$d_dx_amm_iss_stage
+tmp_df$Age <- tmp_df$d_dx_amm_age
+```
+
+```{r message=FALSE, warning=FALSE}
+table(tmp_df$progression_group,tmp_df$davies_based_risk)
+```
+
+```{r message=FALSE, warning=FALSE}
+table(tmp_df$Myeloid.5.Score,tmp_df$NkT.6.Score)
+```
+```{r message=FALSE, warning=FALSE}
+table(tmp_df$Myeloid.5.Score,tmp_df$davies_based_risk)
+```
+
+```{r message=FALSE, warning=FALSE}
+table(tmp_df$Myeloid.5.Score,tmp_df$NkT.1.4.Score)
+```
+
+```{r message=FALSE, warning=FALSE}
+table(tmp_df$Myeloid.5.Score,tmp_df$NkT.3.1.Score)
+```
+
+```{r message=FALSE, warning=FALSE}
+table(tmp_df$NkT.1.4.Score,tmp_df$NkT.3.1.Score)
+```
+
+```{r message=FALSE, warning=FALSE}
+table(tmp_df$NkT.1.4.Score,tmp_df$BEry.1.Score)
+```
+
+```{r message=FALSE, warning=FALSE}
+table(tmp_df$NkT.1.4.Score,tmp_df$BEry.2.Score)
+```
+
+```{r message=FALSE, warning=FALSE}
+table(tmp_df$NkT.1.4.Score,tmp_df$BEry.3.Score)
+```
+
+```{r message=FALSE, warning=FALSE}
+ix<-grep('Score',colnames(tmp_df))
+colnames(tmp_df)[ix]
+x<-tmp_df[,ix]
+for(i in 1:ncol(x)){x[,i]<-as.numeric(x[,i])}
+```
+
+```{r message=FALSE, warning=FALSE}
+pheatmap::pheatmap(cor(x))
+```
+
+### PFS COX 
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ davies_based_risk + d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ NkT.6.Score + d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ NkT.6.Score + NkT.3.1.Score + 
+                      d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ NkT.6.Score + NkT.1.4.Score + NkT.3.1.Score + 
+                      d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ NkT.6.Score + NkT.1.4.Score + NkT.3.1.Score + 
+                      BEry.1.Score +
+                      d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ NkT.6.Score + NkT.1.4.Score + NkT.3.1.Score + 
+                      BEry.1.Score + BEry.2.Score +
+                      d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ NkT.6.Score + NkT.1.4.Score + NkT.3.1.Score + 
+                      BEry.1.Score + BEry.2.Score +  BEry.3.Score +
+                      d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ NkT.6.Score + Myeloid.5.Score + NkT.1.4.Score + NkT.3.1.Score + 
+                      BEry.1.Score + BEry.2.Score +  BEry.3.Score +
+                      d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ NkT.6.Score + Myeloid.5.Score + NkT.1.4.Score + NkT.3.1.Score + 
+                      BEry.1.Score + BEry.2.Score +  BEry.3.Score +
+                      d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ NkT.6.Score + Myeloid.5.Score + NkT.1.4.Score + NkT.3.1.Score + 
+                      BEry.1.Score + BEry.2.Score +  BEry.3.Score +
+                      d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ NkT.6.Score + Myeloid.5.Score + NkT.1.4.Score + NkT.3.1.Score + 
+                      BEry.1.Score + BEry.2.Score +  BEry.3.Score + Plasma.4.Score +
+                      d_pt_sex + d_dx_amm_iss_stage + d_dx_amm_age + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V2 <- tmp_df[,which(colnames(tmp_df) %in% c("BEry.1.Score","BEry.2.Score","BEry.3.Score","Myeloid.5.Score",
+                                                   "NkT.1.4.Score","NkT.3.1.Score","NkT.6.Score","Plasma.4.Score",
+                                                   'censpfs','Cytogenetic.Risk','Sex','ISS.Stage','Age'))]
+```
+
+```{r message=FALSE, warning=FALSE}
+ddist <- datadist(tmp_df_V2)
+```
+
+```{r message=FALSE, warning=FALSE}
+options(datadist='ddist')
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(censpfs ~ Myeloid.5.Score + NkT.6.Score + NkT.1.4.Score + NkT.3.1.Score + BEry.1.Score + BEry.2.Score +  BEry.3.Score + Plasma.4.Score +
+                Cytogenetic.Risk + ISS.Stage + Age + Sex, tmp_df_V2, x=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+nom.bi <- nomogram(mod.bi,fun = plogis,funlabel="Risk of Progression")
+```
+
+```{r message=FALSE, warning=FALSE}
+#pdf(file="risk.nonogram.pdf",width = 10,height = 10)
+#plot(nom.bi,col.grid = gray(c(0.8, 0.95)))
+#dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+#pdf(file="/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/myeloid12.progressio.risk.nonogram.pdf",width = 7.5,height = 5)
+#plot(nom.bi,col.grid = gray(c(0.8, 0.95)))
+#dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+#Predict(mod.bi)
+tmp_df$pred <- predict(object = mod.bi, tmp_df_V2[,-1],se.fit = TRUE,type="fitted.ind")
+tmp_df$pred[tmp_df$pred > 0.6] <- 'Integrated High Risk'
+tmp_df$pred[!tmp_df$pred %in% 'Integrated High Risk'] <- 'Integrated Low Risk'
+```
+
+```{r message=FALSE, warning=FALSE}
+### PFS COX 
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ pred + d_pt_sex + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+#pdf(file="/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/integrated.cytogenetic.myeloid12.progression.risk.survival.pdf",width = 6,height = 6)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "n",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('darkgreen','purple'))
+#dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+iscore <- surv_pvalue( survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(censpfs ~ NkT.6.Score + NkT.1.4.Score + NkT.3.1.Score + BEry.1.Score + BEry.2.Score +  BEry.3.Score + 
+                Cytogenetic.Risk + Age + Sex, tmp_df_V2, x=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df$pred <- predict(object = mod.bi, tmp_df_V2[,-1],se.fit = TRUE,type="fitted.ind")
+tmp_df$pred[tmp_df$pred > 0.6] <- 'Integrated High Risk'
+tmp_df$pred[!tmp_df$pred %in% 'Integrated High Risk'] <- 'Integrated Low Risk'
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ pred + d_pt_sex + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "n",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('darkgreen','purple'))
+```
+
+```{r message=FALSE, warning=FALSE}
+iscore_noISS <- surv_pvalue( survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+```
+
+###
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(censpfs ~ Cytogenetic.Risk + Age + Sex, tmp_df_V2, x=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df$pred <- predict(object = mod.bi, tmp_df_V2[,-1],se.fit = TRUE,type="fitted.ind")
+tmp_df$pred[tmp_df$pred > 0.6] <- 'Integrated High Risk'
+tmp_df$pred[!tmp_df$pred %in% 'Integrated High Risk'] <- 'Integrated Low Risk'
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ pred + d_pt_sex + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "n",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('darkgreen','purple'))
+```
+
+```{r message=FALSE, warning=FALSE}
+iscore_noISS_oly_cyto <- surv_pvalue( survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(censpfs ~ Cytogenetic.Risk + Age + Sex, tmp_df_V2, x=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df$pred <- predict(object = mod.bi, tmp_df_V2[,-1],se.fit = TRUE,type="fitted.ind")
+tmp_df$pred[tmp_df$pred > 0.6] <- 'Integrated High Risk'
+tmp_df$pred[!tmp_df$pred %in% 'Integrated High Risk'] <- 'Integrated Low Risk'
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ pred + d_pt_sex + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "n",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('darkgreen','purple'))
+```
+
+```{r message=FALSE, warning=FALSE}
+iscore_noISS_oly_cyto <- surv_pvalue( survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(censpfs ~ NkT.6.Score + NkT.1.4.Score + NkT.3.1.Score + BEry.1.Score + BEry.2.Score +  BEry.3.Score + Plasma.4.Score + Age + Sex, tmp_df_V2, x=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df$pred <- predict(object = mod.bi, tmp_df_V2[,-1],se.fit = TRUE,type="fitted.ind")
+tmp_df$pred[tmp_df$pred > 0.6] <- 'Integrated High Risk'
+tmp_df$pred[!tmp_df$pred %in% 'Integrated High Risk'] <- 'Integrated Low Risk'
+```
+
+```{r message=FALSE, warning=FALSE}
+forest_model( coxph(Surv(ttcpfs, censpfs==1) ~ pred + d_pt_sex + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "n",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('darkgreen','purple'))
+```
+
+```{r message=FALSE, warning=FALSE}
+iscore_noISS_oly_I <- surv_pvalue( survfit(Surv(ttcpfs, censpfs==1) ~ pred, data = tmp_df, type=c("kaplan-meier")) , method = "survdiff")
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+#ix <- tmp_df$pred %in% "Integrated High Risk"
+#iy <- tmp_df$pred %in% "Integrated Low Risk"
+#rmst2(time = tmp_df$ttcpfs[ix], status = tmp_df$censpfs[ix], arm = tmp_df$pred[ix])
+```
+
+
+```{r message=FALSE, warning=FALSE}
+iscore
+iscore_noISS
+iscore_noISS_oly_cyto
+iscore_noISS_oly_I
+```
+
+
+
+
