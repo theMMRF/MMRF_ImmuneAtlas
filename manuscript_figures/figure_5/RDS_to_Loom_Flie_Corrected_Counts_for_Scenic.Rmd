@@ -1,0 +1,102 @@
+---
+title: "Save LOOM file for pySCENIC analysis"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+Modified from - https://bookdown.org/ytliu13207/SingleCellMultiOmicsDataAnalysis/scenic.html#run-scenic-vis-pyscenic
+
+# Setup
+```{r init}
+source("source/Figure_3/Fig5_corrected_load_data.R", local = T)
+# output_volcano <- file.path(output_F3, "Volcano")
+# dir.create(output_volcano, showWarnings = F, recursive = T)
+```
+
+# Create Baseline-Triplet
+Multiple baseline samples are possible, verify
+```{r baseline_objects}
+gc()
+filtered <- merged # |> subset(merged, subset = (
+#     lineage_group != "LQ"
+# ))
+
+rm(merged)
+rm(merged_md_bckup)
+rm(clusterMD)
+gc()
+```
+
+```{r}
+DefaultAssay(filtered) <- "RNA_Batch_Corrected"
+
+loom_output <- "/opt/megaseq-data/wcpilch/MMRF-ImmuneAtlas-Analysis-Sync/data/SCENIC_LOOM_FILES/FULL/"
+dir.create(loom_output, showWarnings = F)
+Idents(filtered) <- filtered@meta.data[, cluster_group]
+exprMat <- filtered@assays$RNA_Batch_Corrected@counts
+cellInfo <- filtered@meta.data
+
+library(dplyr)
+cellInfo <- cellInfo |> mutate(across(where(is.factor), as.character))
+
+
+loci1 <- which(rowSums(exprMat) > 1 * .01 * ncol(exprMat))
+exprMat_filter <- exprMat[loci1, ]
+```
+
+```{r}
+library(SCopeLoomR)
+add_cell_annotation <- function(loom, cellAnnotation) {
+    cellAnnotation <- data.frame(cellAnnotation)
+    if (any(c("nGene", "nUMI") %in% colnames(cellAnnotation))) {
+        warning("Columns 'nGene' and 'nUMI' will not be added as annotations to the loom file.")
+        cellAnnotation <- cellAnnotation[, colnames(cellAnnotation) != "nGene", drop = FALSE]
+        cellAnnotation <- cellAnnotation[, colnames(cellAnnotation) != "nUMI", drop = FALSE]
+    }
+
+    if (ncol(cellAnnotation) <= 0) stop("The cell annotation contains no columns")
+    if (!all(get_cell_ids(loom) %in% rownames(cellAnnotation))) stop("Cell IDs are missing in the annotation")
+
+    cellAnnotation <- cellAnnotation[get_cell_ids(loom), , drop = FALSE]
+    # Add annotation
+    for (cn in colnames(cellAnnotation))
+    {
+        add_col_attr(loom = loom, key = cn, value = cellAnnotation[, cn])
+    }
+
+    invisible(loom)
+}
+
+loom <- build_loom(file.path(loom_output, "CORRECTED_PYSCENIC_FULL_UNFILTERED_COUNTS_SLOT_LOOM_022924_NO_FACTORS.loom"), dgem = exprMat_filter)
+loom <- add_cell_annotation(loom, cellInfo)
+close_loom(loom)
+```
+
+```{r}
+DefaultAssay(filtered) <- "RNA_Batch_Corrected"
+Idents(filtered) <- filtered@meta.data[, cluster_group]
+exprMat <- filtered@assays$RNA_Batch_Corrected@data
+cellInfo <- filtered@meta.data
+
+library(dplyr)
+cellInfo <- cellInfo |> mutate(across(where(is.factor), as.character))
+
+
+loci1 <- which(rowSums(exprMat) > 1 * .01 * ncol(exprMat))
+exprMat_filter <- exprMat[loci1, ]
+```
+
+```{r}
+loom <- build_loom(file.path(loom_output, "CORRECTED_PYSCENIC_FULL_UNFILTERED_DATA_SLOT_LOOM_022924_NO_FACTORS.loom"), dgem = exprMat_filter)
+loom <- add_cell_annotation(loom, cellInfo)
+close_loom(loom)
+```
+
+
+```{r}
+
+```
