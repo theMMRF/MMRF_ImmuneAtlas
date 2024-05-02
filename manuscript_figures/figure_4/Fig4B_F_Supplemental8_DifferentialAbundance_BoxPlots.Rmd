@@ -1,0 +1,872 @@
+---
+title: "Figure 4 - Differential Abundance Plots"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+Generates the select differential abundance box plots for main figures
+
+Includes: 
+
+Figure 4b (Differential Abundance of Major Cell Types)
+
+Supplemental Figure 8 (CD8% of CD3+ Cells)
+
+Figure 4f (Box plots of select CD3+ cells)
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Setup
+```{r init}
+library(ggpubr)
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+source("source/Helper_Functions/COMMON_diff_abundance_functions.R", local = T)
+
+
+
+output_extra <- file.path(output_F3, "Diff_Abundance")
+output_box <- file.path(output_extra, "Diff_Abundance_Box")
+output_raw_csv <- file.path(output_extra, "CSV")
+output_abun_volcano <- file.path(output_extra, "Diff_Abun_Volcano")
+dir.create(output_extra, showWarnings = F, recursive = T)
+dir.create(output_box, showWarnings = F, recursive = T)
+dir.create(output_raw_csv, showWarnings = F, recursive = T)
+dir.create(output_abun_volcano, showWarnings = F, recursive = T)
+```
+
+
+# Diff Abundance 
+
+## Setup Categories 
+
+# Flag CD45 Positive/Immune Populations
+```{r}
+cd45neg_notplasma <- c("BEry.0", "BEry.4", "BEry.13", "BEry.17", "Ery.0", "Ery.1", "Ery.2", "Ery.3", "Ery.4", "Ery.5", "Ery.6", "Ery.8", "Ery.9", "Full.23")
+
+merged@meta.data <- merged@meta.data %>% mutate(isImmune = dplyr::case_when(
+    .data[[cluster_group]] %in% cd45neg_notplasma ~ "No",
+    .default = "Yes"
+))
+```
+
+# Flag Non-Malginant, Plasma Populations
+```{r}
+merged@meta.data <- merged@meta.data %>% mutate(isNonMalignantImmune = dplyr::case_when(
+    subcluster_V03072023_compartment == "Plasma" ~ "No",
+    .default = isImmune
+))
+
+merged$pfs_risk <- paste0(merged$progression_group, "_", merged$davies_based_risk)
+```
+
+
+# Differential Abundance - Major Cell Populations (4B)
+## Setup Count Data
+
+```{r}
+baseline <- merged |> subset(VJ_INTERVAL == "Baseline")
+Idents(baseline) <- baseline@meta.data[, cluster_group]
+#  baseline$pfs_risk <- paste0(baseline$progression_group, "_", baseline$davies_based_risk)
+
+baseline@meta.data <- baseline@meta.data |> dplyr::mutate(lineage_group_T = dplyr::case_when(
+    lineage_group %in% c("CD4", "CD8") ~ "T",
+    .default = lineage_group
+))
+
+counts <- table(baseline$public_id, baseline@meta.data[, "lineage_group_T"])
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, progression_group, Batch, siteXbatch, Study_Site, Batch, davies_based_risk, d_pt_race_1, pfs_risk)
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+```
+
+
+## Perform wilcoxon tests
+```{r}
+counts_majfil <- counts |> dplyr::filter(cluster != "LQ" & cluster != "P")
+
+outs <- quickWilcoxAndPlots(counts_majfil, "progression_group", "NP", "RP")
+```
+
+Scatter plot of all cell types
+```{r}
+floral_fill_theme <- list(
+    "NP (SIG)" = "#7CA0D4",
+    "NP" = "#a9bad0",
+    "RP (SIG)" = "#A48AD3",
+    "RP" = "#baafcf"
+)
+
+floral_color_theme <- list(
+    "NP (SIG)" = "#285291",
+    "NP" = "#43618e",
+    "RP (SIG)" = "#4f2b8e",
+    "RP" = "#5f4886"
+)
+
+annotations <- data.frame(
+    xpos = c(-Inf, Inf),
+    ypos = c(Inf, Inf),
+    annotateText = c(
+        "RP Enriched",
+        "NP Enriched"
+    ),
+    hjustvar = c(-.05, 1),
+    vjustvar = c(1, 1)
+)
+
+p_wilcoxplot <- outs$plotWilcoxOut +
+    scale_fill_manual(values = floral_fill_theme, breaks = names(floral_fill_theme), labels = c("NP*", "NP", "RP*", "RP")) +
+    scale_color_manual(values = floral_color_theme) +
+    xlab("Average Log2 Fold Change") +
+    ylab("-log10 P Value") +
+    ggtitle("Differential Abundance, All Clusters") +
+    geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), size = 6)
+
+pdf_and_png(p_wilcoxplot, output_abun_volcano, "major_cell_types", pdfWidth = 10 * 1.3, pdfHeight = 8 * 1.3)
+```
+
+```{r}
+write.csv(outs$wilcox_out, file.path(output_raw_csv, "major_cell_types.csv"))
+counts_tmp <- counts
+```
+
+Formatting for Figure 4B
+
+```{r}
+grouping_var <- "progression_group"
+counts <- counts_majfil
+counts <- counts |> dplyr::filter(progression_group %in% c("NP", "RP"))
+
+cluster_size <- counts |>
+    dplyr::group_by(cluster) |>
+    dplyr::summarise(cluster_size = sum(Counts))
+
+counts <- dplyr::left_join(counts, cluster_size)
+
+
+counts <- counts |>
+    dplyr::group_by(public_id) |>
+    dplyr::summarise(pat_total = sum(Counts)) |>
+    dplyr::right_join(counts) |>
+    dplyr::filter(pat_total != 0) |> # remove patients with zero cells in group
+    dplyr::mutate(prop = Counts / pat_total)
+
+tmp <- counts |> dplyr::filter(cluster %in% c("T", "M", "B"))
+tmp <- tmp |> dplyr::mutate(cluster_label = dplyr::case_when(
+    cluster == "T" ~ "T Cell",
+    cluster == "M" ~ "Myeloid",
+    cluster == "B" ~ "B Cell"
+))
+
+tmp$cluster_label <- factor(tmp$cluster_label, levels = c("T Cell", "Myeloid", "B Cell"))
+
+
+tmp_out <- outs$wilcox_out
+tmp_out <- tmp_out |> dplyr::filter(cluster %in% c("T", "M", "B"))
+
+tmp_out <- tmp_out |> dplyr::mutate(cluster_label = dplyr::case_when(
+    cluster == "T" ~ "T Cell",
+    cluster == "M" ~ "Myeloid",
+    cluster == "B" ~ "B Cell"
+))
+tmp_out$cluster_label <- factor(tmp_out$cluster_label, levels = c("T Cell", "Myeloid", "B Cell"))
+tmp_out <- tmp_out |> arrange(cluster_label)
+
+per_clust_max <- tmp |>
+    dplyr::group_by(cluster_label, progression_group) |>
+    dplyr::summarise(Q1 = quantile(prop, 0.25), Q3 = quantile(prop, 0.75), IQR = Q3 - Q1, upper = min(max(prop), Q3 + 1.5 * IQR), lower = max(min(prop), Q1 - 1.5 * IQR)) |>
+    dplyr::group_by(cluster_label) |>
+    dplyr::summarise(lower_min = min(lower), upper_max = max(upper), IQR_max = max(IQR), y.position = upper_max + 0.1, y.position.alt = upper_max + 0.1 * IQR_max)
+
+tmp_out <- tmp_out |> dplyr::left_join(per_clust_max, by = "cluster_label")
+
+p <- ggplot(tmp) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out, label = "{scales::pvalue(p)}", size = 5) +
+    theme_prism() +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    facet_grid(~cluster_label, scales = "free") +
+    xlab("Progression Group") +
+    ylab("Proportion") +
+    NoLegend() +
+    coord_cartesian(clip = "off")
+
+pdf_and_png(p, output_box, "major_cell_types_t_b_m", pdfHeight = 1.22 * 2.5, pdfWidth = 2.966 * 2.5, SAVE_RDS = F)
+```
+
+
+### Figure 4b, panel formatting
+Figure 4B, final output
+
+
+```{r}
+# alternative
+
+tmp_t <- tmp |> dplyr::filter(cluster == "T")
+tmp_b <- tmp |> dplyr::filter(cluster == "B")
+tmp_m <- tmp |> dplyr::filter(cluster == "M")
+
+tmp_out_t <- tmp_out |> dplyr::filter(cluster == "T")
+tmp_out_b <- tmp_out |> dplyr::filter(cluster == "B")
+tmp_out_m <- tmp_out |> dplyr::filter(cluster == "M")
+
+
+p_t <- ggplot(tmp_t) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_t, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    ylim(c(0, tmp_out_t$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    ylab("Proportion\nof Non-Malignant Cells") +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle("T Cell") +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+
+p_b <- ggplot(tmp_b) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    stat_pvalue_manual(tmp_out_b, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    ylim(c(0, tmp_out_b$y.position + 0.05)) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    theme(axis.title.y = element_blank()) +
+    ggtitle("B Cell") +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+
+p_m <- ggplot(tmp_m) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_m, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    ylim(c(0, tmp_out_m$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    theme(axis.title.y = element_blank()) +
+    ggtitle("Myeloid") +
+    xlab("Progression Group") +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+p_indp <- p_t + p_m + p_b
+
+pdf_and_png(p_indp, output_box, "major_cell_types_t_b_m_ind", pdfHeight = H_HALF, pdfWidth = W_FULL, scale = 3, SAVE_RDS = F)
+```
+
+# Supplemental Figure 8: CD8% of CD3+ Cells
+
+## Setup counts
+```{r}
+baseline <- merged |> subset(VJ_INTERVAL == "Baseline")
+Idents(baseline) <- baseline@meta.data[, cluster_group]
+#  baseline$pfs_risk <- paste0(baseline$progression_group, "_", baseline$davies_based_risk)
+
+counts <- table(baseline$public_id, baseline@meta.data[, "lineage_group"])
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, progression_group, Batch, siteXbatch, Study_Site, Batch, davies_based_risk, d_pt_race_1, pfs_risk)
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+```
+
+## Run Wilcoxon
+
+```{r}
+counts_majfil <- counts |> dplyr::filter(cluster %in% c("CD8", "CD4"))
+
+outs <- quickWilcoxAndPlots(counts_majfil, "progression_group", "NP", "RP")
+```
+
+```{r}
+write.csv(outs$wilcox_out, file.path(output_raw_csv, "CD8_v_CD4.csv"))
+counts_tmp <- counts_majfil
+```
+
+Setup for Supplemental Figure 8 Rendering
+```{r}
+grouping_var <- "progression_group"
+counts <- counts_majfil
+counts <- counts |> dplyr::filter(progression_group %in% c("NP", "RP"))
+
+cluster_size <- counts |>
+    dplyr::group_by(cluster) |>
+    dplyr::summarise(cluster_size = sum(Counts))
+
+counts <- dplyr::left_join(counts, cluster_size)
+
+
+counts <- counts |>
+    dplyr::group_by(public_id) |>
+    dplyr::summarise(pat_total = sum(Counts)) |>
+    dplyr::right_join(counts) |>
+    dplyr::filter(pat_total != 0) |> # remove patients with zero cells in group
+    dplyr::mutate(prop = Counts / pat_total)
+tmp <- counts
+tmp <- tmp |> dplyr::mutate(cluster_label = dplyr::case_when(
+    cluster == "CD8" ~ "CD8+ T Cell",
+    cluster == "CD4" ~ "CD4+ T Cell"
+))
+
+tmp_out <- outs$wilcox_out
+tmp_out <- tmp_out |> dplyr::mutate(cluster_label = dplyr::case_when(
+    cluster == "CD8" ~ "CD8+ T Cell",
+    cluster == "CD4" ~ "CD4+ T Cell"
+))
+
+
+per_clust_max <- tmp |>
+    dplyr::group_by(cluster_label, progression_group) |>
+    dplyr::summarise(Q1 = quantile(prop, 0.25), Q3 = quantile(prop, 0.75), IQR = Q3 - Q1, upper = min(max(prop), Q3 + 1.5 * IQR), lower = max(min(prop), Q1 - 1.5 * IQR)) |>
+    dplyr::group_by(cluster_label) |>
+    dplyr::summarise(lower_min = min(lower), upper_max = max(upper), IQR_max = max(IQR), y.position = upper_max + 0.1, y.position.alt = upper_max + 0.1 * IQR_max)
+
+tmp_out <- tmp_out |> dplyr::left_join(per_clust_max, by = "cluster_label")
+
+p <- ggplot(tmp) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out, label = "{scales::pvalue(p)}", size = 5) +
+    theme_prism() +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    facet_grid(~cluster_label, scales = "free") +
+    xlab("Progression Group") +
+    ylab("Proportion") +
+    NoLegend() +
+    coord_cartesian(clip = "off")
+
+pdf_and_png(p, output_box, "cd8_and_cd4", pdfHeight = H_FULL, pdfWidth = W_FULL, scale = 3)
+```
+
+```{r}
+# alternative
+tmp_t <- tmp |> dplyr::filter(cluster == "CD8")
+tmp_out_t <- tmp_out |> dplyr::filter(cluster == "CD8")
+
+p_t <- ggplot(tmp_t) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_t, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    ylim(c(0, tmp_out_t$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    ylab(bquote(atop("Proportion", "of" ~ CD3^"+" ~ "T Cells"))) +
+    xlab("Progression Group") +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle("CD8+ T Cell Fraction") +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+
+p_indp <- p_t
+
+pdf_and_png(p_indp, output_box, "cd8_percent_only", pdfHeight = H_FULL, pdfWidth = W_FULL, scale = 3, SAVE_RDS = F)
+```
+
+### Supplemental Figure 8 Panel Layout
+
+```{r}
+tmp_t <- tmp |> dplyr::filter(cluster == "CD8")
+tmp_out_t <- tmp_out |> dplyr::filter(cluster == "CD8")
+
+write.csv(tmp_t, file.path(output_box, "proportion_data_plotting_cd8.csv"))
+write.csv(tmp_out_t, file.path(output_box, "cluster_proportion_data_plotting_cd8.csv"))
+
+p_t <- ggplot(tmp_t) +
+    geom_violin(alpha = 0.75, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.5, width = 0.2, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, width = 0.3, alpha = 0.75, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_t, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    ylim(c(0, tmp_out_t$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    ylab(bquote(atop("Proportion", "of" ~ CD3^"+" ~ "T Cells"))) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle(bquote(CD8^"+" ~ "T Cell Fraction")) +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+
+p_indp <- p_t
+
+pdf_and_png(p_indp, output_box, "cd8_percent_only_violin", pdfHeight = H_FULL, pdfWidth = W_FULL, scale = 3, SAVE_RDS = F)
+```
+
+
+
+# Main Figure 4F - Differential abundance across CD3+ T Cells
+
+## Setup counts object
+```{r}
+baseline <- merged |> subset(VJ_INTERVAL == "Baseline")
+Idents(baseline) <- baseline@meta.data[, cluster_group]
+#  baseline$pfs_risk <- paste0(baseline$progression_group, "_", baseline$davies_based_risk)
+
+counts <- table(baseline$public_id, baseline@meta.data[, cluster_group])
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, progression_group, Batch, siteXbatch, Study_Site, Batch, davies_based_risk, d_pt_race_1, pfs_risk)
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+
+cluster_md <- baseline@meta.data |> dplyr::distinct(!!sym(cluster_group), isDoublet, isImmune, isNonMalignantImmune, subcluster_V03072023_compartment, lineage_group, lineage_order, cellID_short, cellID_long)
+colnames(cluster_md)[1] <- "cluster"
+counts <- counts |> dplyr::left_join(cluster_md, by = "cluster")
+```
+
+## Perform Wilcoxon rank-sum 
+```{r}
+counts_cd8cd4 <- counts |> dplyr::filter(lineage_group %in% c("CD4", "CD8"))
+outs <- quickWilcoxAndPlots(counts_cd8cd4, "progression_group", "NP", "RP")
+```
+
+```{r}
+# floral_fill_theme <- list(
+#     "NP (SIG)" = "#7CA0D4",
+#     "NP" = "#a9bad0",
+#     "RP (SIG)" = "#A48AD3",
+#     "RP" = "#baafcf"
+# )
+
+# floral_color_theme <- list(
+#     "NP (SIG)" = "#285291",
+#     "NP" = "#43618e",
+#     "RP (SIG)" = "#4f2b8e",
+#     "RP" = "#5f4886"
+# )
+
+# annotations <- data.frame(
+#     xpos = c(-Inf, Inf),
+#     ypos = c(Inf, Inf),
+#     annotateText = c(
+#         "RP Enriched",
+#         "NP Enriched"
+#     ),
+#     hjustvar = c(-.05, 1),
+#     vjustvar = c(1, 1)
+# )
+
+# p_wilcoxplot <- outs$plotWilcoxOut +
+#     scale_fill_manual(values = floral_fill_theme, breaks = names(floral_fill_theme), labels = c("NP*", "NP", "RP*", "RP")) +
+#     scale_color_manual(values = floral_color_theme) +
+#     xlab("Average Log2 Fold Change") +
+#     ylab("-log10 P Value") +
+#     ggtitle("Differential Abundance, All Clusters") +
+#     geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), size = 6)
+
+# pdf_and_png(p_wilcoxplot, output_abun_volcano, "cd8_cd4_wilcox", pdfWidth = 10 * 1.3, pdfHeight = 8 * 1.3)
+```
+
+```{r}
+write.csv(outs$wilcox_out, file.path(output_raw_csv, "cd8_cd4_only.csv"))
+```
+
+Formatting for Figure 4F
+
+```{r}
+grouping_var <- "progression_group"
+counts <- counts_cd8cd4
+counts <- counts |> dplyr::filter(progression_group %in% c("NP", "RP"))
+
+cluster_size <- counts |>
+    dplyr::group_by(cluster) |>
+    dplyr::summarise(cluster_size = sum(Counts))
+
+counts <- dplyr::left_join(counts, cluster_size)
+
+
+counts <- counts |>
+    dplyr::group_by(public_id) |>
+    dplyr::summarise(pat_total = sum(Counts)) |>
+    dplyr::right_join(counts) |>
+    dplyr::filter(pat_total != 0) |> # remove patients with zero cells in group
+    dplyr::mutate(prop = Counts / pat_total)
+tmp <- counts |> dplyr::filter(cluster %in% c("NkT.6", "NkT.3.1", "NkT.2.0", "NkT.2.1"))
+tmp <- tmp |> dplyr::mutate(cluster_label = cellID_short)
+
+
+tmp_out <- outs$wilcox_out |> dplyr::filter(cluster %in% c("NkT.6", "NkT.3.1", "NkT.2.0", "NkT.2.1"))
+
+per_clust_max <- tmp |>
+    dplyr::group_by(cluster, progression_group) |>
+    dplyr::summarise(Q1 = quantile(prop, 0.25), Q3 = quantile(prop, 0.75), IQR = Q3 - Q1, upper = min(max(prop), Q3 + 1.5 * IQR), lower = max(min(prop), Q1 - 1.5 * IQR)) |>
+    dplyr::group_by(cluster) |>
+    dplyr::summarise(lower_min = min(lower), upper_max = max(upper), IQR_max = max(IQR), y.position = upper_max + 0.1, y.position.alt = upper_max + 0.1 * IQR_max)
+
+tmp_out <- tmp_out |> dplyr::left_join(per_clust_max, by = "cluster")
+
+p <- ggplot(tmp) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out, label = "{scales::pvalue(p)}", size = 5) +
+    theme_prism() +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    facet_grid(~cluster, scales = "free") +
+    xlab("Progression Group") +
+    ylab("Proportion") +
+    NoLegend() +
+    coord_cartesian(clip = "off")
+
+pdf_and_png(p, output_box, "various", pdfHeight = H_FULL, pdfWidth = W_FULL, scale = 3)
+```
+
+### Figure 4F Rendering (Select CD3+ clusters enriched in NP or RP)
+
+```{r}
+# alternative
+
+tmp_info <- tmp |> dplyr::distinct(cluster, cellID_short, cellID_long)
+tmp_out <- tmp_out |> dplyr::left_join(tmp_info, by = "cluster")
+
+tmp_20 <- tmp |> dplyr::filter(cluster == "NkT.2.0")
+tmp_21 <- tmp |> dplyr::filter(cluster == "NkT.2.1")
+tmp_6 <- tmp |> dplyr::filter(cluster == "NkT.6")
+tmp_31 <- tmp |> dplyr::filter(cluster == "NkT.3.1")
+
+tmp_out_20 <- tmp_out |> dplyr::filter(cluster == "NkT.2.0")
+tmp_out_21 <- tmp_out |> dplyr::filter(cluster == "NkT.2.1")
+tmp_out_6 <- tmp_out |> dplyr::filter(cluster == "NkT.6")
+tmp_out_31 <- tmp_out |> dplyr::filter(cluster == "NkT.3.1")
+
+p_t_6 <- ggplot(tmp_6) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_6, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    ylim(c(0, tmp_out_6$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    theme(axis.title.x = element_blank()) +
+    ylab(bquote(atop("Proportion", "of" ~ CD3^"+" ~ "T Cells"))) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle(tmp_6$cellID_short) +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+p_t_31 <- ggplot(tmp_31) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_31, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    ylim(c(0, tmp_out_31$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    theme(axis.title.x = element_blank()) +
+    theme(axis.title.y = element_blank()) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle(tmp_31$cellID_short) +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+p_t_20 <- ggplot(tmp_20) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_20, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    ylim(c(0, tmp_out_20$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    theme(axis.title.x = element_blank()) +
+    ylab(bquote(atop("Proportion", "of" ~ CD3^"+" ~ "T Cells"))) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle(tmp_20$cellID_short) +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+p_t_21 <- ggplot(tmp_21) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_21, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    ylim(c(0, tmp_out_21$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    theme(axis.title.x = element_blank()) +
+    theme(axis.title.y = element_blank()) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle(tmp_21$cellID_short) +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+
+p_naive <- p_t_6 + p_t_31
+p_cyto <- p_t_20 + p_t_21
+
+# The NULLS just add some vertical padding without messing with plot margins
+p_grid <- cowplot::plot_grid(NULL, p_naive, NULL, p_cyto, nrow = 4, ncol = 1, labels = c("", "Less Differentiated", "", "More Differentiated"), label_size = 18, label_x = 0.5, hjust = 0, vjust = 0.5, rel_heights = c(0.025, 1, 0.025, 1))
+pdf_and_png(p_grid, output_box, "select_cd8cd4_clusters", pdfHeight = H_FULL, pdfWidth = W_FULL, scale = 3, SAVE_RDS = F)
+```
+
+
+
+# Other differential abundance testing (not used for main figures)
+```{r}
+baseline <- merged |> subset(VJ_INTERVAL == "Baseline")
+Idents(baseline) <- baseline@meta.data[, cluster_group]
+#  baseline$pfs_risk <- paste0(baseline$progression_group, "_", baseline$davies_based_risk)
+
+counts <- table(baseline$public_id, baseline@meta.data[, cluster_group])
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, progression_group, Batch, siteXbatch, Study_Site, Batch, davies_based_risk, d_pt_race_1, pfs_risk)
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+
+cluster_md <- baseline@meta.data |> dplyr::distinct(!!sym(cluster_group), isDoublet, isImmune, isNonMalignantImmune, subcluster_V03072023_compartment, lineage_group, lineage_order, cellID_short, cellID_long)
+colnames(cluster_md)[1] <- "cluster"
+counts <- counts |> dplyr::left_join(cluster_md, by = "cluster")
+```
+
+```{r}
+# outs <- quickWilcoxAndPlots(counts |> dplyr::filter(lineage_group != "LQ"), "progression_group", "NP", "RP")
+```
+
+```{r}
+# floral_fill_theme <- list(
+#     "NP (SIG)" = "#7CA0D4",
+#     "NP" = "#a9bad0",
+#     "RP (SIG)" = "#A48AD3",
+#     "RP" = "#baafcf"
+# )
+
+# floral_color_theme <- list(
+#     "NP (SIG)" = "#285291",
+#     "NP" = "#43618e",
+#     "RP (SIG)" = "#4f2b8e",
+#     "RP" = "#5f4886"
+# )
+
+# annotations <- data.frame(
+#     xpos = c(-Inf, Inf),
+#     ypos = c(Inf, Inf),
+#     annotateText = c(
+#         "RP Enriched",
+#         "NP Enriched"
+#     ),
+#     hjustvar = c(-.05, 1),
+#     vjustvar = c(1, 1)
+# )
+
+# p_wilcoxplot <- outs$plotWilcoxOut +
+#     scale_fill_manual(values = floral_fill_theme, breaks = names(floral_fill_theme), labels = c("NP*", "NP", "RP*", "RP")) +
+#     scale_color_manual(values = floral_color_theme) +
+#     xlab("Average Log2 Fold Change") +
+#     ylab("-log10 P Value") +
+#     ggtitle("Differential Abundance, All Clusters") +
+#     geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), size = 6)
+
+# pdf_and_png(p_wilcoxplot, output_abun_volcano, "all_cells", pdfWidth = 10 * 1.3, pdfHeight = 8 * 1.3)
+```
+
+```{r}
+# write.csv(outs$wilcox_out, file.path(output_raw_csv, "all_cells.csv"))
+```
+
+# CD3+ DiffAbun
+```{r}
+# outs <- quickWilcoxAndPlots(counts |> dplyr::filter(lineage_group %in% c("CD8", "CD4")), "progression_group", "NP", "RP")
+```
+
+```{r}
+# floral_fill_theme <- list(
+#     "NP (SIG)" = "#7CA0D4",
+#     "NP" = "#a9bad0",
+#     "RP (SIG)" = "#A48AD3",
+#     "RP" = "#baafcf"
+# )
+
+# floral_color_theme <- list(
+#     "NP (SIG)" = "#285291",
+#     "NP" = "#43618e",
+#     "RP (SIG)" = "#4f2b8e",
+#     "RP" = "#5f4886"
+# )
+
+# annotations <- data.frame(
+#     xpos = c(-Inf, Inf),
+#     ypos = c(Inf, Inf),
+#     annotateText = c(
+#         "RP Enriched",
+#         "NP Enriched"
+#     ),
+#     hjustvar = c(-.05, 1),
+#     vjustvar = c(1, 1)
+# )
+
+# p_wilcoxplot <- outs$plotWilcoxOut +
+#     scale_fill_manual(values = floral_fill_theme, breaks = names(floral_fill_theme), labels = c("NP*", "NP", "RP*", "RP")) +
+#     scale_color_manual(values = floral_color_theme) +
+#     xlab("Average Log2 Fold Change") +
+#     ylab("-log10 P Value") +
+#     ggtitle("Differential Abundance, CD3+ Cells") +
+#     geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), size = 6)
+
+# pdf_and_png(p_wilcoxplot, output_abun_volcano, "cd3_positive_cells", pdfWidth = 10 * 1.3, pdfHeight = 8 * 1.3)
+```
+
+# Myeloid DiffAbun
+```{r}
+# outs <- quickWilcoxAndPlots(counts |> dplyr::filter(lineage_group %in% c("M")), "progression_group", "NP", "RP")
+```
+
+```{r}
+# floral_fill_theme <- list(
+#     "NP (SIG)" = "#7CA0D4",
+#     "NP" = "#a9bad0",
+#     "RP (SIG)" = "#A48AD3",
+#     "RP" = "#baafcf"
+# )
+
+# floral_color_theme <- list(
+#     "NP (SIG)" = "#285291",
+#     "NP" = "#43618e",
+#     "RP (SIG)" = "#4f2b8e",
+#     "RP" = "#5f4886"
+# )
+
+# annotations <- data.frame(
+#     xpos = c(-Inf, Inf),
+#     ypos = c(Inf, Inf),
+#     annotateText = c(
+#         "RP Enriched",
+#         "NP Enriched"
+#     ),
+#     hjustvar = c(-.05, 1),
+#     vjustvar = c(1, 1)
+# )
+
+# p_wilcoxplot <- outs$plotWilcoxOut +
+#     scale_fill_manual(values = floral_fill_theme, breaks = names(floral_fill_theme), labels = c("NP*", "NP", "RP*", "RP")) +
+#     scale_color_manual(values = floral_color_theme) +
+#     xlab("Average Log2 Fold Change") +
+#     ylab("-log10 P Value") +
+#     ggtitle("Differential Abundance, Myeloid") +
+#     geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), size = 6)
+
+# pdf_and_png(p_wilcoxplot, output_abun_volcano, "myeloid_cells", pdfWidth = 10 * 1.3, pdfHeight = 8 * 1.3)
+```
+
+
+# B DiffAbun
+```{r}
+# outs <- quickWilcoxAndPlots(counts |> dplyr::filter(lineage_group %in% c("B")), "progression_group", "NP", "RP")
+```
+
+```{r}
+# floral_fill_theme <- list(
+#     "NP (SIG)" = "#7CA0D4",
+#     "NP" = "#a9bad0",
+#     "RP (SIG)" = "#A48AD3",
+#     "RP" = "#baafcf"
+# )
+
+# floral_color_theme <- list(
+#     "NP (SIG)" = "#285291",
+#     "NP" = "#43618e",
+#     "RP (SIG)" = "#4f2b8e",
+#     "RP" = "#5f4886"
+# )
+
+# annotations <- data.frame(
+#     xpos = c(-Inf, Inf),
+#     ypos = c(Inf, Inf),
+#     annotateText = c(
+#         "RP Enriched",
+#         "NP Enriched"
+#     ),
+#     hjustvar = c(-.05, 1),
+#     vjustvar = c(1, 1)
+# )
+
+# p_wilcoxplot <- outs$plotWilcoxOut +
+#     scale_fill_manual(values = floral_fill_theme, breaks = names(floral_fill_theme), labels = c("NP*", "NP", "RP*", "RP")) +
+#     scale_color_manual(values = floral_color_theme) +
+#     xlab("Average Log2 Fold Change") +
+#     ylab("-log10 P Value") +
+#     ggtitle("Differential Abundance, B Cells") +
+#     geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), size = 6)
+
+# pdf_and_png(p_wilcoxplot, output_abun_volcano, "B_cells", pdfWidth = 10 * 1.3, pdfHeight = 8 * 1.3)
+```
+
+# Immune
+```{r}
+# outs <- quickWilcoxAndPlots(counts |> dplyr::filter(lineage_group %in% c("CD8", "CD4", "M", "B", "Nk", "Other")), "progression_group", "NP", "RP")
+```
+
+```{r}
+# floral_fill_theme <- list(
+#     "NP (SIG)" = "#7CA0D4",
+#     "NP" = "#a9bad0",
+#     "RP (SIG)" = "#A48AD3",
+#     "RP" = "#baafcf"
+# )
+
+# floral_color_theme <- list(
+#     "NP (SIG)" = "#285291",
+#     "NP" = "#43618e",
+#     "RP (SIG)" = "#4f2b8e",
+#     "RP" = "#5f4886"
+# )
+
+# annotations <- data.frame(
+#     xpos = c(-Inf, Inf),
+#     ypos = c(Inf, Inf),
+#     annotateText = c(
+#         "RP Enriched",
+#         "NP Enriched"
+#     ),
+#     hjustvar = c(-.05, 1),
+#     vjustvar = c(1, 1)
+# )
+
+# p_wilcoxplot <- outs$plotWilcoxOut +
+#     scale_fill_manual(values = floral_fill_theme, breaks = names(floral_fill_theme), labels = c("NP*", "NP", "RP*", "RP")) +
+#     scale_color_manual(values = floral_color_theme) +
+#     xlab("Average Log2 Fold Change") +
+#     ylab("-log10 P Value") +
+#     ggtitle("Differential Abundance, Immune Cells") +
+#     geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), size = 6)
+
+# pdf_and_png(p_wilcoxplot, output_abun_volcano, "immune_cells", pdfWidth = 10 * 1.3, pdfHeight = 8 * 1.3)
+```
+
+```{r}
+```

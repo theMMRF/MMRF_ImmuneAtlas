@@ -1,0 +1,321 @@
+---
+title: "Figure 4 - Differential Abundance Plots"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+Generates the visual for Figure 4C - Differential Abundance overlaid on Myeloid Trajectory
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Setup
+```{r init}
+library(ggpubr)
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+source("source/Helper_Functions/COMMON_diff_abundance_functions.R", local = T)
+
+
+output_misc <- file.path(output_F3, "Experimental-Misc")
+output_extra <- file.path(output_F3, "Diff_Abundance")
+output_box <- file.path(output_extra, "Diff_Abundance_Box")
+output_raw_csv <- file.path(output_extra, "CSV")
+output_abun_volcano <- file.path(output_extra, "Diff_Abun_Volcano")
+
+dir.create(output_extra, showWarnings = F, recursive = T)
+dir.create(output_box, showWarnings = F, recursive = T)
+dir.create(output_raw_csv, showWarnings = F, recursive = T)
+dir.create(output_abun_volcano, showWarnings = F, recursive = T)
+```
+
+```{r}
+output_misc <- file.path(output_F3, "Experimental-Misc")
+
+dir.create(output_misc, showWarnings = F, recursive = T)
+```
+
+
+# Diff Abundance 
+
+## Setup Categories 
+
+Flag CD45 Positive/Immune Populations
+```{r}
+cd45neg_notplasma <- c("BEry.0", "BEry.4", "BEry.13", "BEry.17", "Ery.0", "Ery.1", "Ery.2", "Ery.3", "Ery.4", "Ery.5", "Ery.6", "Ery.8", "Ery.9", "Full.23")
+
+merged@meta.data <- merged@meta.data %>% mutate(isImmune = dplyr::case_when(
+    .data[[cluster_group]] %in% cd45neg_notplasma ~ "No",
+    .default = "Yes"
+))
+```
+
+Flag Non-Malginant, Plasma Populations
+```{r}
+merged@meta.data <- merged@meta.data %>% mutate(isNonMalignantImmune = dplyr::case_when(
+    subcluster_V03072023_compartment == "Plasma" ~ "No",
+    .default = isImmune
+))
+
+merged$pfs_risk <- paste0(merged$progression_group, "_", merged$davies_based_risk)
+```
+
+
+# Differential Abundance - Major Cell Populations
+
+## Differential Abundance - Setup Counts Data
+
+```{r}
+baseline <- merged |> subset(VJ_INTERVAL == "Baseline")
+Idents(baseline) <- baseline@meta.data[, cluster_group]
+#  baseline$pfs_risk <- paste0(baseline$progression_group, "_", baseline$davies_based_risk)
+
+counts <- table(baseline$public_id, baseline@meta.data[, cluster_group])
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, progression_group, Batch, siteXbatch, Study_Site, Batch, davies_based_risk, d_pt_race_1, pfs_risk)
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+
+cluster_md <- baseline@meta.data |> dplyr::distinct(!!sym(cluster_group), isDoublet, isImmune, isNonMalignantImmune, subcluster_V03072023_compartment, lineage_group, lineage_order, cellID_short, cellID_long)
+colnames(cluster_md)[1] <- "cluster"
+counts <- counts |> dplyr::left_join(cluster_md, by = "cluster")
+```
+
+# Perform Wilcoxon and Compute logFC for cluster proportions across Myeloid clusters
+```{r}
+outs <- quickWilcoxAndPlots(counts |> dplyr::filter(lineage_group %in% c("M")), "progression_group", "RP", "NP")
+
+info <- outs$wilcox_out
+
+# Done to prevent the color scale from getting blown out by the cluster with ~28 cells
+info <- info |> dplyr::mutate(fold_change_for_display = dplyr::case_when(
+    fold_change == Inf ~ 1.72,
+    fold_change == 0 ~ 0.0000001,
+    .default = fold_change
+))
+
+info <- info |> dplyr::mutate(fold_change_for_display = log2(fold_change_for_display))
+info <- info |> dplyr::mutate(fold_change = log2(fold_change))
+```
+
+# Figure 4C, Variant A - Color cells by log2FC
+
+```{r}
+blUMAP <- baseline[["umap.sub"]]@cell.embeddings |> as.data.frame()
+blUMAP$cellname <- rownames(blUMAP)
+md <- baseline@meta.data
+md <- dplyr::left_join(md, blUMAP, by = "cellname")
+md_ordered <- md |> dplyr::filter(subcluster_V03072023_compartment == "Myeloid")
+
+info_rel <- info |> dplyr::select(cluster, fold_change, fold_change_for_display)
+colnames(info_rel)[[1]] <- cluster_group
+
+md_ordered <- dplyr::left_join(md_ordered, info_rel, by = cluster_group)
+
+md_grouping_centers <- md_ordered |>
+    dplyr::group_by(cellID_short) |>
+    summarise(UMAPSUB_1 = mean(UMAPSUB_1), UMAPSUB_2 = mean(UMAPSUB_2)) |>
+    dplyr::left_join(md_ordered |> dplyr::distinct(cellID_short, lineage_group, color, color_sub, fold_change, fold_change_for_display),
+        by = "cellID_short"
+    ) |>
+    dplyr::filter(lineage_group != "LQ")
+
+md_ordered <- dplyr::left_join(md_ordered, md_grouping_centers |> dplyr::select(cellID_short, color_sub))
+
+p <- md_ordered |>
+    ggplot(aes(x = UMAPSUB_1, y = UMAPSUB_2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = md_ordered$color_sub, colour = md_ordered$color_sub)) +
+    NoLegend() +
+    theme_prism()
+
+p_label <- p +
+    geom_label_repel(data = md_grouping_centers, label.size = 1, size = 4, aes(label = paste0(cellID_short, "\nFC: ", round(fold_change, digits = 3)), fill = fold_change_for_display, fontface = "bold"), color = "black", hjust = 0.5) +
+    scale_fill_gradientn(
+        colors = gradientn_colors
+    )
+
+
+p_label <- p_label +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p_label <- p_label + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+pdf_and_png(p_label, output_misc, "color_label_FC", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+
+
+p <- md_ordered |>
+    ggplot(aes(x = UMAPSUB_1, y = UMAPSUB_2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, aes(color = fold_change_for_display, fill = fold_change_for_display))) +
+    theme_prism() +
+    scale_fill_gradientn(
+        colors = gradientn_colors
+    )
+
+p_label <- p +
+    geom_label_repel(data = md_grouping_centers, label.size = 1, size = 4, aes(label = paste0(cellID_short, "\nFC: ", round(fold_change, digits = 3)), fill = fold_change_for_display, fontface = "bold"), color = "black", hjust = 0.5) +
+    scale_fill_gradientn(
+        colors = gradientn_colors
+    )
+
+
+p_label <- p_label +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p_label <- p_label + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+pdf_and_png(p_label, output_misc, "color_cells_fc", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+```
+
+# Figure 4C
+## Load Trajectory
+```{r}
+sce <- readRDS("/opt/localdata/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/output/monocle3_myeloid/myeloid_alltimepoints/sce_myeloid_alltimepoints.rds")
+
+info_rel <- info |> dplyr::select(cluster, fold_change, fold_change_for_display, p)
+info_rel <- info_rel |> dplyr::mutate(sig_star = dplyr::case_when(
+    p < 0.05 ~ "*",
+    .default = ""
+))
+
+colnames(info_rel)[[1]] <- cluster_group
+per_cell_cluster_info <- merged@meta.data |>
+    dplyr::filter(subcluster_V03072023_compartment == "Myeloid") |>
+    dplyr::select(subcluster_V03072023, cellname, color_sub, primary_id_color, color, cellID_short)
+per_cluster_info <- merged@meta.data |> dplyr::distinct(subcluster_V03072023, color_sub, primary_id_color, color, cellID_short)
+per_cluster_info <- per_cluster_info |> dplyr::left_join(info_rel)
+per_cell_cluster_info_with_sig <- dplyr::left_join(per_cell_cluster_info, info_rel)
+X <- reducedDim(sce, "UMAP") |> as.data.frame()
+
+colnames(X)[1:2] <- c("Dim1", "Dim2")
+sds <- SlingshotDataSet(sce)
+
+
+clusterLabels <- slingClusterLabels(sds)
+connectivity <- slingMST(sds, as.df = T)
+clusters <- unique(connectivity$Cluster)
+nclus <- length(clusters)
+centers <- t(vapply(clusters, function(clID) {
+    w <- clusterLabels[, clID]
+    return(apply(X, 2, weighted.mean, w = w))
+}, rep(0, ncol(X)))) # gets center of UMAP points
+X <- X[rowSums(clusterLabels) > 0, , drop = FALSE]
+clusterLabels <- clusterLabels[rowSums(clusterLabels) > 0, ,
+    drop = FALSE
+]
+X$cellname <- rownames(X)
+X <- dplyr::left_join(X, per_cell_cluster_info_with_sig, by = "cellname")
+centers <- centers |> as.data.frame()
+centers$Cluster <- rownames(centers)
+
+library(unikn)
+# test <- pal_unikn_pair[1:14]
+# test <- t(test)
+# library(paletteer)
+
+# palette <- paletteer_d("RColorBrewer::Spectral")
+# palette <- c("#2f4f4f", "#a52a2a", "#228b22", "#4b0082", "#ff8c00", "#deb887", "#00ff00", "#00bfff", "#0000ff", "#ff00ff", "#ffff54", "#dda0dd", "#ff1493", "#7fffd4") # paletteer_d("ggthemes::Classic_Cyclic")
+# palette <- colorRampPalette(palette)(14)
+# set.seed(SEED_TESTING)
+# palette <- permute(palette)
+```
+
+## Render UMAP with trajectory and labels
+
+```{r}
+p_umap <- ggplot(X, aes(x = Dim1, y = Dim2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = X$color_sub, color = X$color_sub), alpha = 0.01) +
+    theme_prism()
+
+# geom_point(aes(fill = sce$ident), col = "grey70", shape = 21) +
+
+mst_with_centers <- dplyr::left_join(connectivity, centers, by = "Cluster")
+
+
+centers <- mst_with_centers |> dplyr::distinct(Cluster, Dim1, Dim2)
+centers_nostart <- mst_with_centers |>
+    dplyr::distinct(Cluster, Dim1, Dim2)
+
+centers_nostart$subcluster_V03072023 <- centers_nostart$Cluster
+
+centers_nostart <- centers_nostart |> dplyr::left_join(per_cluster_info, by = "subcluster_V03072023")
+
+lin1_only <- dplyr::filter(mst_with_centers, Lineage == 1)
+p <- p_umap + geom_point(data = mst_with_centers, size = 6) +
+    geom_path(data = mst_with_centers %>% arrange(Order), aes(group = Lineage), size = 3) +
+    geom_label_repel(data = centers_nostart, aes(label = paste0(sig_star, cellID_short, "\nlog2FC: ", round(fold_change, digits = 3)), fill = fold_change_for_display), label.size = 0.28, size = 4)
+
+p <- p +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p <- p + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+) +
+    scale_fill_gradientn(
+        colors = c(fill_theme_binary[["NP"]], "white", fill_theme_binary[["RP"]]),
+        limits = c(-1, 1),
+        oob = squish
+    ) +
+    labs(fill = "Log2FC") +
+    theme(legend.title = element_text())
+
+
+pdf_and_png(p, output_misc, "traj_overlay", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+
+p <- ggplot(mst_with_centers, aes(x = Dim1, y = Dim2)) +
+    geom_point(data = mst_with_centers, size = 6) +
+    geom_path(data = mst_with_centers %>% arrange(Order), aes(group = Lineage), size = 3) +
+    geom_label_repel(data = centers_nostart, aes(label = paste0(sig_star, cellID_short, "\nlog2FC: ", round(fold_change, digits = 3)), fill = fold_change_for_display), label.size = 0.35, size = 4.5)
+
+p <- p +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p <- p + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+) +
+    scale_fill_gradientn(
+        colors = gradientn_colors,
+        limits = c(-1, 1),
+        oob = squish
+    )
+pdf_and_png(p, output_misc, "traj_no_overlay", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+```
+
+```{r}
+```

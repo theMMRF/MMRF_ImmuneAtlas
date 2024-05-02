@@ -1,0 +1,300 @@
+---
+title: "Figure 4 - Differential Abundance Plots"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+This is the script which generates the stacked bar chart figure 4a. The script also generates similar charts for other clusters
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Setup
+```{r init}
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+source("source/Helper_Functions/COMMON_diff_abundance_functions.R", local = T)
+output_extra <- file.path(output_F3, "All_Split_BarCharts")
+dir.create(output_extra, showWarnings = F, recursive = T)
+```
+
+# Figure 4a
+# Stacked Bar Chart, Grouped by Progression Group, Colored by Primary ID Color (Full UMAP)
+```{r}
+generate_barchart_normalized_primaryid <- function(md_ordered, grouping) {
+    md_ordered <- md_ordered |> arrange(desc(lineage_group), desc(lineage_order))
+
+    md_bl <- md_ordered |> dplyr::filter(VJ_INTERVAL == "Baseline" & lineage_group != "LQ" & progression_group %in% c("NP", "RP"))
+    generalCounts <- table(md_bl$public_id, md_bl[, "display_name"])
+    generalProp <- (generalCounts / rowSums(generalCounts)) |> as.data.frame()
+    colnames(generalProp) <- list("public_id", "display_name", "count")
+
+    md_bl_subset <- md_bl |> dplyr::distinct(public_id, !!sym(grouping))
+    md_name_subset <- md_bl |> dplyr::distinct(display_name, lineage_group, lineage_order, primary_id_color, color)
+
+    patRatios <- dplyr::left_join(generalProp, md_bl_subset, by = "public_id")
+    patRatios <- dplyr::left_join(patRatios, md_name_subset, by = "display_name")
+
+    md_bl_sel <- md_ordered |> dplyr::distinct(lineage_group, display_name, cellID_short, lineage_order, color, primary_id_color, subcluster_V03072023)
+    md_bl_sel_2 <- md_ordered |> dplyr::distinct(lineage_group, primary_id_color)
+
+    patRatios$display_name <- factor(patRatios$display_name, levels = rev(unique(md_ordered$display_name)))
+    patRatios$lineage_group <- factor(patRatios$lineage_group, levels = (unique(md_ordered$lineage_group)))
+    patRatios <- patRatios |> na.omit(axis = 2)
+
+    md_bl_sel <- md_ordered |> dplyr::distinct(lineage_group, display_name, lineage_order, color, primary_id_color, subcluster_V03072023)
+    md_bl_sel_2 <- md_ordered |> dplyr::distinct(lineage_group, primary_id_color)
+
+    cell_counts <- patRatios |>
+        group_by(!!sym(grouping), display_name) |>
+        dplyr::summarise(mean = mean(count)) |>
+        group_by(!!sym(grouping)) |>
+        mutate(pct = prop.table(mean))
+
+    cell_counts2 <- patRatios |>
+        group_by(public_id, !!sym(grouping), lineage_group) |>
+        dplyr::summarise(sum_lin = sum(count)) |>
+        group_by(!!sym(grouping), lineage_group) |>
+        dplyr::summarise(mean_lin = mean(sum_lin)) |>
+        group_by(!!sym(grouping)) |>
+        arrange(desc(lineage_group)) |>
+        mutate(pct = prop.table(mean_lin), ypos = cumsum(mean_lin) - 0.5 * mean_lin)
+
+    cell_counts <- cell_counts |>
+        dplyr::left_join(md_bl_sel, by = "display_name")
+
+    cell_counts2 <- cell_counts2 |>
+        dplyr::left_join(md_bl_sel_2, by = "lineage_group") |>
+        dplyr::arrange(desc(lineage_group))
+    cell_counts2 <- cell_counts2 |> dplyr::left_join(lineage_label, by = "lineage_group")
+
+    p <- ggplot(cell_counts, aes(x = !!sym(grouping), y = pct)) +
+        geom_col(position = "fill", fill = cell_counts$color, color = cell_counts$color, aes(x = !!sym(grouping), y = pct), show.legend = F) +
+        geom_col(data = cell_counts2, position = "fill", fill = cell_counts2$primary_id_color, color = "black", alpha = 0, aes(x = !!sym(grouping), y = pct), show.legend = T) +
+        geom_label(data = cell_counts2, color = cell_counts2$primary_id_color, label.size = .7, aes(label = paste0(lineage_name, "\n", scales::percent(pct))), y = cell_counts2$ypos, size = 5, fontface = "bold") +
+        theme_prism() +
+        ylab("Baseline Microenvironment Composition") +
+        xlab("Progression Group")
+
+
+    # cumsum_mix[15] <- cumsum_mix[15] + 0.02
+    # cumsum_mix[16] <- cumsum_mix[16] + 0.02
+
+    phoriz <- ggplot(cell_counts, aes(x = progression_group, y = pct)) +
+        geom_col(position = "fill", fill = cell_counts$color, color = cell_counts$color, aes(x = progression_group, y = pct), show.legend = F) +
+        geom_col(data = cell_counts2, position = "fill", fill = cell_counts2$primary_id_color, color = "black", alpha = 0, aes(x = progression_group, y = pct), show.legend = T) +
+        geom_label(data = cell_counts2, color = cell_counts2$primary_id_color, label.size = .7, aes(label = paste0(lineage_name, "\n", scales::percent(mean_lin))), y = cell_counts2$ypos, size = 5, fontface = "bold") +
+        theme_prism() +
+        coord_flip() +
+        ylim(c(0, 1.0)) +
+        theme(axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank(), axis.text.y = element_text(size = 16), axis.title.y = element_blank()) +
+        ylab("Baseline Microenvironment Composition")
+
+
+    return(list("vert" = p, "horiz" = phoriz, "data" = cell_counts2))
+}
+
+output_primaryid <- file.path(output_extra, "PrimaryID")
+dir.create(output_primaryid, showWarnings = F, recursive = T)
+
+p <- generate_barchart_normalized_primaryid(merged@meta.data |> dplyr::filter(lineage_group != "LQ"), "progression_group")
+cumsum_mix <- p$data$ypos
+cumsum_mix[15] <- cumsum_mix[15] + 0.03
+cumsum_mix[16] <- cumsum_mix[16] + 0.03
+
+p$horiz$layers[[3]]$aes_params$y <- cumsum_mix # Tweak to offset
+p$vert$layers[[3]]$aes_params$y <- cumsum_mix
+
+p$horiz <- p$horiz + xlab("Progression Group")
+p$vert <- p$vert + xlab("Progression Group")
+
+# Figure 4A
+pdf_and_png(p$vert, output_primaryid, "stacked_bar_chart", pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_primaryid, "stacked_bar_chart_flip", pdfWidth = W_DBL, pdfHeight = H_HALF, scale = 3)
+
+p <- generate_barchart_normalized_primaryid(merged@meta.data |> dplyr::filter(lineage_group %in% c("B", "M", "CD8", "CD4", "Nk")), "progression_group")
+pdf_and_png(p$vert, output_primaryid, "stacked_bar_chart_select_immune", pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_primaryid, "stacked_bar_chart_select_immune_flip", pdfWidth = 12, pdfHeight = 4)
+
+p <- generate_barchart_normalized_primaryid(merged@meta.data |> dplyr::filter(lineage_group %in% c("CD8", "CD4", "Nk")), "progression_group")
+pdf_and_png(p$vert, output_primaryid, "stacked_bar_chart_NkT", pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_primaryid, "stacked_bar_chart_NkT_flip", pdfWidth = 12, pdfHeight = 4)
+
+p <- generate_barchart_normalized_primaryid(merged@meta.data |> dplyr::filter(lineage_group %in% c("CD8", "CD4")), "progression_group")
+pdf_and_png(p$vert, output_primaryid, "stacked_bar_chart_T", pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_primaryid, "stacked_bar_chart_T_flip", pdfWidth = 12, pdfHeight = 4)
+
+p <- generate_barchart_normalized_primaryid(merged@meta.data |> dplyr::filter(subcluster_V03072023_compartment == c("BEry")), "progression_group")
+pdf_and_png(p$vert, output_primaryid, "stacked_bar_chart_BEry", pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_primaryid, "stacked_bar_chart_BEry_flip", pdfWidth = 12, pdfHeight = 4)
+```
+
+
+# Stacked Bar Chart, Grouped by Progression Group, Colored by Sub Compartment Color
+
+```{r}
+generate_barchart_normalized <- function(md_ordered, grouping, orderBySize = F) {
+    md_ordered <- md_ordered |> arrange(desc(lineage_group), desc(lineage_order))
+
+    md_bl <- md_ordered |> dplyr::filter(VJ_INTERVAL == "Baseline" & lineage_group != "LQ" & progression_group %in% c("NP", "RP"))
+    generalCounts <- table(md_bl$public_id, md_bl[, "display_name"])
+    clustSize <- colSums(generalCounts)
+    generalProp <- (generalCounts / rowSums(generalCounts)) |> as.data.frame()
+    colnames(generalProp) <- list("public_id", "display_name", "count")
+
+    clustSize <- sort(clustSize, decreasing = T)
+    clust_order_by_size <- names(clustSize)
+
+    clustSize_df <- data.frame(display_name = names(clustSize), clustSize = clustSize)
+    generalProp <- dplyr::left_join(generalProp, clustSize_df, by = "display_name")
+
+    md_bl_subset <- md_bl |> dplyr::distinct(public_id, !!sym(grouping))
+    md_name_subset <- md_bl |> dplyr::distinct(display_name, lineage_group, lineage_order, primary_id_color, color, color_sub)
+
+    patRatios <- dplyr::left_join(generalProp, md_bl_subset, by = "public_id")
+    patRatios <- dplyr::left_join(patRatios, md_name_subset, by = "display_name")
+
+    md_bl_sel <- md_ordered |> dplyr::distinct(lineage_group, display_name, lineage_order, color, color_sub, primary_id_color, subcluster_V03072023)
+    md_bl_sel_2 <- md_ordered |> dplyr::distinct(lineage_group, primary_id_color)
+
+    if (orderBySize) {
+        patRatios$display_name <- factor(patRatios$display_name, levels = clust_order_by_size)
+    } else {
+        patRatios$display_name <- factor(patRatios$display_name, levels = rev(unique(md_ordered$display_name)))
+    }
+
+    patRatios$lineage_group <- factor(patRatios$lineage_group, levels = (unique(md_ordered$lineage_group)))
+    patRatios <- patRatios |> na.omit(axis = 2)
+
+    patRatios$ordering <- patRatios$display_name
+
+    cell_counts <- patRatios |>
+        group_by(!!sym(grouping), display_name) |>
+        dplyr::summarise(mean = mean(count)) |>
+        group_by(!!sym(grouping)) |>
+        arrange(display_name) |>
+        mutate(pct = prop.table(mean), ypos = cumsum(mean) - 0.5 * mean)
+
+    cell_counts <- cell_counts |>
+        dplyr::left_join(md_bl_sel, by = "display_name")
+
+    p <- ggplot(cell_counts, aes(x = !!sym(grouping), y = pct)) +
+        geom_col(position = "fill", fill = cell_counts$color_sub, color = cell_counts$color_sub, aes(x = !!sym(grouping), y = pct), show.legend = F) +
+        geom_label(data = cell_counts, color = cell_counts$color_sub, label.size = .7, aes(label = paste0(display_name, "\n", scales::percent(pct))), y = cell_counts$ypos, size = 3.5) +
+        theme_prism() +
+        ylab("Baseline Microenvironment Composition") +
+        xlab("Progression Group")
+
+    cell_counts2_NP <- cell_counts |> dplyr::filter(progression_group == "NP")
+    cell_counts2_RP <- cell_counts |> dplyr::filter(progression_group == "RP")
+
+    # cumsum_pos_NP <- c(0, cumsum(cell_counts2_NP$mean))
+    # cumsum_pos_NP <- cumsum_pos_NP[1:(length(cumsum_pos_NP) - 1)]
+    # cumsum_pos_NP <- cumsum_pos_NP + 0.5 * cell_counts2_NP$mean
+
+
+    # cumsum_pos_RP <- c(0, cumsum(cell_counts2_RP$mean))
+    # cumsum_pos_RP <- cumsum_pos_RP[1:(length(cumsum_pos_RP) - 1)]
+    # cumsum_pos_RP <- cumsum_pos_RP + 0.5 * cell_counts2_RP$mean
+
+
+
+
+    # cumsum_mix[15] <- cumsum_mix[15] + 0.02
+    # cumsum_mix[16] <- cumsum_mix[16] + 0.02
+
+    phoriz <- ggplot(cell_counts, aes(x = progression_group, y = pct)) +
+        geom_col(position = "fill", fill = cell_counts$color_sub, color = cell_counts$color_sub, aes(x = progression_group, y = pct), show.legend = F) +
+        geom_label(data = cell_counts, color = cell_counts$color_sub, label.size = .7, aes(label = paste0(display_name, "\n", scales::percent(mean))), y = cell_counts$ypos, size = 3.5) +
+        theme_prism() +
+        coord_flip() +
+        ylim(c(0, 1.0)) +
+        theme(axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank()) +
+        ylab("Baseline Microenvironment Composition")
+
+
+    return(list("vert" = p, "horiz" = phoriz, "data" = cell_counts))
+}
+
+output_subcomp <- file.path(output_extra, "subComp")
+dir.create(output_subcomp, showWarnings = F, recursive = T)
+
+p <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "CD8"), "progression_group")
+p2 <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "CD8"), "progression_group", orderBySize = T)
+pdf_and_png(p$vert, output_subcomp, paste0("stacked_bar_chart", "CD8"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_subcomp, paste0("stacked_bar_chart_flip", "CD8"), pdfWidth = 12, pdfHeight = 4)
+pdf_and_png(p2$vert, output_subcomp, paste0("stacked_bar_chart_by_size", "CD8"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p2$horiz, output_subcomp, paste0("stacked_bar_chart_by_size_flip", "CD8"), pdfWidth = 12, pdfHeight = 4)
+
+
+p <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "CD4"), "progression_group")
+p2 <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "CD4"), "progression_group", orderBySize = T)
+pdf_and_png(p$vert, output_subcomp, paste0("stacked_bar_chart", "CD4"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_subcomp, paste0("stacked_bar_chart_flip", "CD4"), pdfWidth = 12, pdfHeight = 4)
+pdf_and_png(p2$vert, output_subcomp, paste0("stacked_bar_chart_by_size", "CD4"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p2$horiz, output_subcomp, paste0("stacked_bar_chart_by_size_flip", "CD4"), pdfWidth = 12, pdfHeight = 4)
+
+p <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "Nk"), "progression_group")
+p2 <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "Nk"), "progression_group", orderBySize = T)
+pdf_and_png(p$vert, output_subcomp, paste0("stacked_bar_chart", "Nk"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_subcomp, paste0("stacked_bar_chart_flip", "Nk"), pdfWidth = 12, pdfHeight = 4)
+pdf_and_png(p2$vert, output_subcomp, paste0("stacked_bar_chart_by_size", "Nk"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p2$horiz, output_subcomp, paste0("stacked_bar_chart_by_size_flip", "Nk"), pdfWidth = 12, pdfHeight = 4)
+
+p <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "M"), "progression_group")
+p2 <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "M"), "progression_group", orderBySize = T)
+pdf_and_png(p$vert, output_subcomp, paste0("stacked_bar_chart", "M"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_subcomp, paste0("stacked_bar_chart_flip", "M"), pdfWidth = 12, pdfHeight = 4)
+pdf_and_png(p2$vert, output_subcomp, paste0("stacked_bar_chart_by_size", "M"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p2$horiz, output_subcomp, paste0("stacked_bar_chart_by_size_flip", "M"), pdfWidth = 12, pdfHeight = 4)
+
+p <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "B"), "progression_group")
+p2 <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "B"), "progression_group", orderBySize = T)
+pdf_and_png(p$vert, output_subcomp, paste0("stacked_bar_chart", "B"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_subcomp, paste0("stacked_bar_chart_flip", "B"), pdfWidth = 12, pdfHeight = 4)
+pdf_and_png(p2$vert, output_subcomp, paste0("stacked_bar_chart_by_size", "B"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p2$horiz, output_subcomp, paste0("stacked_bar_chart_by_size_flip", "B"), pdfWidth = 12, pdfHeight = 4)
+
+p <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "E" & subcluster_V03072023_compartment == "BEry"), "progression_group")
+p2 <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "E" & subcluster_V03072023_compartment == "BEry"), "progression_group", orderBySize = T)
+pdf_and_png(p$vert, output_subcomp, paste0("stacked_bar_chart", "EryB"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_subcomp, paste0("stacked_bar_chart_flip", "EryB"), pdfWidth = 12, pdfHeight = 4)
+pdf_and_png(p2$vert, output_subcomp, paste0("stacked_bar_chart_by_size", "EryB"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p2$horiz, output_subcomp, paste0("stacked_bar_chart_by_size_flip", "EryB"), pdfWidth = 12, pdfHeight = 4)
+
+p <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "E"), "progression_group")
+p2 <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(subcluster_V03072023_compartment == "E"), "progression_group", orderBySize = T)
+pdf_and_png(p$vert, output_subcomp, paste0("stacked_bar_chart", "EryAll"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_subcomp, paste0("stacked_bar_chart_flip", "EryAll"), pdfWidth = 12, pdfHeight = 4)
+pdf_and_png(p2$vert, output_subcomp, paste0("stacked_bar_chart_by_size", "EryAll"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p2$horiz, output_subcomp, paste0("stacked_bar_chart_by_size_flip", "EryAll"), pdfWidth = 12, pdfHeight = 4)
+
+p <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(subcluster_V03072023_compartment == "Ery"), "progression_group")
+p2 <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(subcluster_V03072023_compartment == "Ery"), "progression_group", orderBySize = T)
+pdf_and_png(p$vert, output_subcomp, paste0("stacked_bar_chart", "EryC"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_subcomp, paste0("stacked_bar_chart_flip", "EryC"), pdfWidth = 12, pdfHeight = 4)
+pdf_and_png(p2$vert, output_subcomp, paste0("stacked_bar_chart_by_size", "EryC"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p2$horiz, output_subcomp, paste0("stacked_bar_chart_by_size_flip", "EryC"), pdfWidth = 12, pdfHeight = 4)
+
+
+
+p <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "P"), "progression_group")
+p2 <- generate_barchart_normalized(merged@meta.data |> dplyr::filter(lineage_group == "P"), "progression_group", orderBySize = T)
+pdf_and_png(p$vert, output_subcomp, paste0("stacked_bar_chart", "P"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p$horiz, output_subcomp, paste0("stacked_bar_chart_flip", "P"), pdfWidth = 12, pdfHeight = 4)
+pdf_and_png(p2$vert, output_subcomp, paste0("stacked_bar_chart_by_size", "P"), pdfWidth = 6, pdfHeight = 12)
+pdf_and_png(p2$horiz, output_subcomp, paste0("stacked_bar_chart_by_size_flip", "P"), pdfWidth = 12, pdfHeight = 4)
+# cumsum_mix <- p$cumsum
+# cumsum_mix[15] <- cumsum_mix[15] + 0.02
+# cumsum_mix[16] <- cumsum_mix[16] + 0.02
+
+# p$horiz$layers[[3]]$aes_params$y <- cumsum_mix # Tweak to offset
+# p$vert$layers[[3]]$aes_params$y <- cumsum_mix
+```

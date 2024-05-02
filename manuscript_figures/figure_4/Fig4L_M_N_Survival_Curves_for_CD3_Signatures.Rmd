@@ -1,0 +1,403 @@
+---
+title: "Figure 4 - Survival"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+Computes survival curves for select CD3+ T cell markers (Figures 4L, M, N)
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Load object and selected signatures
+```{r init}
+library(UCell)
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+
+nkt <- merged |> subset(subset = (lineage_group %in% c("CD8", "CD4") &
+    VJ_INTERVAL == "Baseline"))
+
+color_low <- "#2c90c3"
+color_high <- "#5a221b"
+
+output_surv <- file.path(output_F3, "Survival")
+dir.create(output_surv, recursive = T, showWarnings = F)
+
+sig <- readxl::read_xlsx(file.path("/opt/pmedseq-data/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation", "data/resources/pan-cancer_tcell_atlas_chu_et_al.xlsx"), sheet = "Table S4", skip = 1, )
+sig_cd4 <- readxl::read_xlsx(file.path("/opt/pmedseq-data/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation", "data/resources/pan-cancer_tcell_atlas_chu_et_al.xlsx"), sheet = "Table S6", skip = 1, )
+
+combined_naive <- unique(c(sig_cd4[[1]] |> na.omit(), sig[[1]] |> na.omit()))
+combined_cyto <- unique(c(sig_cd4[[5]] |> na.omit(), sig[[5]] |> na.omit()))
+combined_exh <- unique(c(sig_cd4[[3]] |> na.omit(), sig[[3]] |> na.omit()))
+
+list_of_signatures <- list("Naive" = combined_naive, "Cytotoxic" = combined_cyto, "Exhaustion" = combined_exh)
+
+valid_sig <- make.names(names(list_of_signatures))
+```
+
+# Signatures, Survival
+UCell computes a signature score which is on a range between 0 and 1. These will be mutlipled by 100 when fitting the CoxPH model, so that the HR can be interpretted as the increase in risk per 1 UCell signature score point increase
+```{r}
+nkt <- AddModuleScore_UCell(nkt, features = list_of_signatures, name = "") # AddModuleScore(nkt, features = list_of_signatures, name = valid_sig)
+
+averageMod <- nkt@meta.data %>%
+    dplyr::group_by(public_id) %>%
+    dplyr::summarise(
+        Naive = mean(!!sym(paste0(valid_sig[[1]]))),
+        Cytotoxicity = mean(!!sym(paste0(valid_sig[[2]]))),
+        Exhaustion = mean(!!sym(paste0(valid_sig[[3]]))),
+    )
+
+subset_patMD <- nkt@meta.data |>
+    dplyr::filter(d_lot_1_start_day < 2) |>
+    dplyr::distinct(public_id, progression_group, censpfs, pfscdy, d_pt_sex, d_dx_amm_age, d_dx_amm_iss_stage, siteXbatch, d_tx_induction_cat, d_amm_tx_asct_1st)
+
+patMD_averageMod <- dplyr::left_join(subset_patMD, averageMod, by = "public_id")
+```
+
+# Figure 4M - Naive Signature
+```{r}
+library(ggstatsplot)
+library(ggpubr)
+library(forestmodel)
+library(gtsummary)
+library(survival)
+library(ggsurvfit)
+library(survminer)
+
+feat <- "Naive"
+tmp <- patMD_averageMod
+
+tmp[, feat] <- tmp[, feat] * 100
+tmp$survVar <- tmp[, feat]
+med_val <- median(tmp$survVar)
+
+med_val <- surv_cutpoint(tmp, time = "pfscdy", event = "censpfs", variables = "survVar", minprop = 0.2)$cutpoint$cutpoint
+
+tmp <- tmp %>% mutate(median_cutoff = case_when(
+    .data[[feat]] < med_val ~ "Low",
+    .data[[feat]] >= med_val ~ "High"
+))
+
+
+
+
+tmp$time <- tmp$pfscdy
+p_naive <- survfit2(Surv(pfscdy, censpfs) ~ median_cutoff, data = tmp) %>% ggsurvfit(size = 2) +
+    labs(
+        x = "Days",
+        y = "Progression Free Survival"
+    ) +
+    add_censor_mark(size = 3) +
+    # add_risktable() +
+    theme_prism() +
+    ggtitle("Chu et al.,\nNaive Signature") +
+    scale_color_manual(values = c("Low" = color_low, "High" = color_high))
+
+
+cox_cont_sxb <- coxph(Surv(pfscdy, censpfs) ~ survVar + siteXbatch, data = tmp)
+
+pval <- summary(cox_cont_sxb)$coefficients["survVar", "Pr(>|z|)"]
+
+pval <- round(pval, digits = 4)
+HR <- summary(cox_cont_sxb)$coefficients["survVar", "exp(coef)"]
+HR <- round(HR, digits = 4)
+
+annotations <- data.frame(
+    xpos = c(-Inf),
+    ypos = c(-Inf),
+    annotateText = c(
+        paste0("\n ", "CoxPH P.Value: ", scales::pvalue(pval), "\n ", "HR: ", HR)
+    ),
+    hjustvar = c(0.0),
+    vjustvar = c(0)
+)
+p_naive_cox <- p_naive + geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), color = c("black"), size = 6)
+p_naive_cox <- ggsurvfit_build(p_naive_cox)
+
+pdf_and_png(p_naive_cox, output_surv, "NaiveSig_All_CD3", pdfWidth = W_DBL / 3, pdfHeight = H_FULL, scale = 3)
+```
+
+# Figure 4L - Cytotoxicity Signature
+```{r}
+library(ggstatsplot)
+library(ggpubr)
+library(forestmodel)
+library(gtsummary)
+library(survival)
+library(ggsurvfit)
+
+feat <- "Cytotoxicity"
+tmp <- patMD_averageMod
+
+tmp[, feat] <- tmp[, feat] * 100
+
+tmp$survVar <- tmp[, feat]
+# med_val <- median(tmp$survVar)
+med_val <- surv_cutpoint(tmp, time = "pfscdy", event = "censpfs", variables = "survVar", minprop = 0.2)$cutpoint$cutpoint
+
+tmp <- tmp %>% mutate(median_cutoff = case_when(
+    .data[[feat]] < med_val ~ "Low",
+    .data[[feat]] >= med_val ~ "High"
+))
+
+
+
+
+tmp$time <- tmp$pfscdy
+p_cyto <- survfit2(Surv(pfscdy, censpfs) ~ median_cutoff, data = tmp) %>% ggsurvfit(size = 2) +
+    labs(
+        x = "Days",
+        y = ""
+    ) +
+    add_censor_mark(size = 3) +
+    # add_risktable() +
+    theme_prism() +
+    ggtitle("Chu et al.,\nCytotoxicity Signature") +
+    scale_color_manual(values = c("Low" = color_low, "High" = color_high))
+
+
+cox_cont_sxb <- coxph(Surv(pfscdy, censpfs) ~ survVar + siteXbatch, data = tmp)
+
+pval <- summary(cox_cont_sxb)$coefficients["survVar", "Pr(>|z|)"]
+HR <- summary(cox_cont_sxb)$coefficients["survVar", "exp(coef)"]
+HR <- round(HR, digits = 4)
+pval <- round(pval, digits = 4)
+
+annotations <- data.frame(
+    xpos = c(-Inf),
+    ypos = c(-Inf),
+    annotateText = c(
+        paste0("\n ", "CoxPH P.Value: ", scales::pvalue(pval), "\n ", "HR: ", HR)
+    ),
+    hjustvar = c(0.0),
+    vjustvar = c(0)
+)
+p_cyto_cox <- p_cyto + geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), color = c("black"), size = 6)
+p_cyto_cox <- ggsurvfit_build(p_cyto_cox)
+
+pdf_and_png(p_cyto_cox, output_surv, "CytoSig_All_CD3", pdfWidth = W_DBL / 3, pdfHeight = H_FULL, scale = 3)
+```
+
+
+# Figure 4N - Exhaustion Signature
+```{r}
+library(ggstatsplot)
+library(ggpubr)
+library(forestmodel)
+library(gtsummary)
+library(survival)
+library(ggsurvfit)
+
+feat <- "Exhaustion"
+tmp <- patMD_averageMod
+
+tmp[, feat] <- tmp[, feat] * 100
+
+tmp$survVar <- tmp[, feat]
+# med_val <- median(tmp$survVar)
+med_val <- surv_cutpoint(tmp, time = "pfscdy", event = "censpfs", variables = "survVar", minprop = 0.2)$cutpoint$cutpoint
+
+tmp <- tmp %>% mutate(median_cutoff = case_when(
+    .data[[feat]] < med_val ~ "Low",
+    .data[[feat]] >= med_val ~ "High"
+))
+
+
+
+
+tmp$time <- tmp$pfscdy
+p_exh <- survfit2(Surv(pfscdy, censpfs) ~ median_cutoff, data = tmp) %>% ggsurvfit(size = 2) +
+    labs(
+        x = "Days",
+        y = " "
+    ) +
+    add_censor_mark(size = 3) +
+    # add_risktable() +
+    theme_prism() +
+    ggtitle("Chu et al.,\nExhaustion Signature") +
+    scale_color_manual(values = c("Low" = color_low, "High" = color_high))
+
+
+cox_cont_sxb <- coxph(Surv(pfscdy, censpfs) ~ survVar + siteXbatch, data = tmp)
+
+pval <- summary(cox_cont_sxb)$coefficients["survVar", "Pr(>|z|)"]
+HR <- summary(cox_cont_sxb)$coefficients["survVar", "exp(coef)"]
+HR <- round(HR, digits = 4)
+
+pval <- round(pval, digits = 4)
+
+annotations <- data.frame(
+    xpos = c(-Inf),
+    ypos = c(-Inf),
+    annotateText = c(
+        paste0("\n ", "CoxPH P.Value: ", scales::pvalue(pval), "\n ", "HR: ", HR)
+    ),
+    hjustvar = c(0.0),
+    vjustvar = c(0)
+)
+p_exh_cox <- p_exh + geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), color = c("black"), size = 6)
+
+p_exh_cox <- ggsurvfit_build(p_exh_cox)
+
+
+pdf_and_png(p_exh_cox, output_surv, "ExhSig_All_CD3", pdfWidth = W_DBL / 3, pdfHeight = H_FULL, scale = 3)
+```
+
+# Combine figures 4L, 4M, and 4N, into one figure (to ensure consistent rendering sizes)
+```{r}
+legend_surv <- cowplot::get_legend(p_naive_cox)
+
+p_all_sig <- cowplot::plot_grid(p_cyto_cox + NoLegend(), p_naive_cox + NoLegend(), p_exh_cox + NoLegend(), legend_surv, nrow = 1, rel_widths = c(1, 1, 1, 0.25))
+pdf_and_png(p_all_sig, output_surv, "All_CD3_Sig", pdfWidth = W_FULL * 3, pdfHeight = H_FULL, scale = 3)
+```
+
+# Cut Figures
+
+Average expression of select exhaustion markers
+```{r}
+tmp2 <- AverageExpression(nkt, assays = "RNA", group.by = "public_id", features = c(list_of_signatures$Exhaustion, "LAG3"))$RNA |> # c("TIGIT", "TOX", "PDCD1", "LAG3", "HAVCR2", "CTLA4"))$RNA |>
+    t() |>
+    as.data.frame()
+
+tmp2$public_id <- rownames(tmp2)
+
+tmp <- dplyr::left_join(subset_patMD, tmp2, by = "public_id")
+
+tmp <- tmp |> dplyr::filter(progression_group %in% c("NP", "RP"))
+
+feat <- "LAG3"
+
+pvals_wilcox <- tmp |>
+    dplyr::filter(progression_group %in% c("NP", "RP")) |>
+    rstatix::wilcox_test(as.formula(paste0(feat, " ~ progression_group"))) |>
+    rstatix::add_xy_position()
+
+p_box_lag3 <- ggplot(tmp, aes(x = progression_group, y = !!sym(feat), fill = progression_group, color = progression_group)) +
+    geom_violin(alpha = 0.75) +
+    geom_boxplot(outlier.shape = NA, width = 0.2, alpha = 0.5) +
+    geom_jitter(shape = 1, show.legend = F, width = 0.3, alpha = 0.75) +
+    ylab(paste0("Per Patient Average Expression")) +
+    ggtitle(feat) +
+    theme_prism() +
+    theme(axis.title.x = element_blank()) +
+    scale_fill_prism("floral") +
+    scale_color_prism("floral") +
+    NoLegend() +
+    ggpubr::stat_pvalue_manual(pvals_wilcox, xmin = "xmin", xmax = "xmax", label = "p", inherit.aes = F, size = 5)
+
+write.csv(tmp, file.path(output_surv, "per_pat_avg_LAG3"))
+```
+
+```{r}
+tmp2 <- AverageExpression(nkt, assays = "RNA", group.by = "public_id", features = c(list_of_signatures$Exhaustion, "LAG3"))$RNA |> # c("TIGIT", "TOX", "PDCD1", "LAG3", "HAVCR2", "CTLA4"))$RNA |>
+    t() |>
+    as.data.frame()
+
+tmp2$public_id <- rownames(tmp2)
+
+tmp <- dplyr::left_join(subset_patMD, tmp2, by = "public_id")
+
+tmp <- tmp |> dplyr::filter(progression_group %in% c("NP", "RP"))
+
+feat <- "TOX"
+
+pvals_wilcox <- tmp |>
+    dplyr::filter(progression_group %in% c("NP", "RP")) |>
+    rstatix::wilcox_test(as.formula(paste0(feat, " ~ progression_group"))) |>
+    rstatix::add_xy_position()
+p_box_tox <- ggplot(tmp, aes(x = progression_group, y = !!sym(feat), fill = progression_group, color = progression_group)) +
+    geom_violin(alpha = 0.75) +
+    geom_boxplot(outlier.shape = NA, width = 0.2, alpha = 0.5) +
+    geom_jitter(shape = 1, show.legend = F, width = 0.3, alpha = 0.75) +
+    ylab(bquote("Average Log-Normalized Expression Across" ~ CD3^"+" ~ "T Cells")) +
+    ggtitle(feat) +
+    theme_prism() +
+    theme(axis.title.x = element_blank()) +
+    scale_fill_prism("floral") +
+    scale_color_prism("floral") +
+    NoLegend() +
+    ggpubr::stat_pvalue_manual(pvals_wilcox, xmin = "xmin", xmax = "xmax", label = "{scales::pvalue(p)}", inherit.aes = F, hide.ns = T, size = 5)
+
+write.csv(tmp, file.path(output_surv, "exh_per_pat_average_lognorm_expr.csv"))
+```
+
+```{r}
+p_exh_comb <- p_box_tox + p_box_lag3
+
+pdf_and_png(p_exh_comb, output_surv, "lognorm_avg_cd3_tox_lag3_violin", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+```
+
+```{r}
+test <- nkt |> subset(subset = (subcluster_V03072023 == "NkT.2.1" & davies_based_risk %in% c("high_risk", "standard_risk")))
+
+test <- AddModuleScore_UCell(test, features = list("Dysfunctional" = c("B3GAT1", "ZEB2", "KLRG1", "KLRK1", "TIGIT", "PDCD1", "LAG3", "CTLA4", "HAVCR2")))
+
+testb <- DotPlot(test, features = c("B3GAT1", "ZEB2", "KLRG1", "KLRK1", "TIGIT", "PDCD1", "LAG3", "CTLA4", "HAVCR2"), group.by = "davies_based_risk")
+
+
+tmp <- test@meta.data
+pvals_wilcox <- tmp |>
+    rstatix::wilcox_test(as.formula(paste0("Dysfunctional_UCell", " ~ davies_based_risk"))) |>
+    rstatix::add_xy_position()
+
+p <- ggplot(tmp, aes(x = davies_based_risk, y = Dysfunctional_UCell, fill = davies_based_risk, color = davies_based_risk)) +
+    geom_violin(alpha = 0.75) +
+    geom_boxplot(outlier.shape = NA, width = 0.2, alpha = 0.5) +
+    geom_quasirandom(shape = 1, show.legend = F, width = 0.3, alpha = 0.1) +
+    ylab(paste0("Per Cell Dysfunctional Score")) +
+    ggtitle("Dysfunctional Score Within CD8+ HLA T Cells") +
+    theme_prism() +
+    theme(axis.title.x = element_blank()) +
+    scale_fill_prism("floral") +
+    scale_color_prism("floral") +
+    NoLegend() +
+    ggpubr::stat_pvalue_manual(pvals_wilcox, xmin = "xmin", xmax = "xmax", label = "p", inherit.aes = F, size = 5)
+```
+
+```{r}
+averageMod_dys <- test@meta.data %>%
+    dplyr::group_by(public_id) %>%
+    dplyr::summarise(
+        DysfunctionalScore = mean(Dysfunctional_UCell)
+    )
+
+subset_patMD_dys <- test@meta.data |>
+    dplyr::distinct(public_id, davies_based_risk)
+
+patMD_averageMod_dys <- dplyr::left_join(subset_patMD_dys, averageMod_dys, by = "public_id")
+```
+
+```{r}
+tmp <- patMD_averageMod_dys
+pvals_wilcox <- tmp |>
+    rstatix::wilcox_test(as.formula(paste0("DysfunctionalScore", " ~ davies_based_risk"))) |>
+    rstatix::add_xy_position()
+
+p <- ggplot(tmp, aes(x = davies_based_risk, y = DysfunctionalScore, fill = davies_based_risk, color = davies_based_risk)) +
+    geom_violin(alpha = 0.75) +
+    geom_boxplot(outlier.shape = NA, width = 0.2, alpha = 0.5) +
+    geom_quasirandom(shape = 1, show.legend = F, width = 0.3, alpha = 0.75) +
+    ylab(paste0("Per Cell Dysfunctional Score")) +
+    ggtitle("Dysfunctional Score Within CD8+ HLA T Cells") +
+    theme_prism() +
+    theme(axis.title.x = element_blank()) +
+    scale_fill_prism("floral") +
+    scale_color_prism("floral") +
+    NoLegend() +
+    ggpubr::stat_pvalue_manual(pvals_wilcox, xmin = "xmin", xmax = "xmax", label = "p", inherit.aes = F, size = 5)
+```
+
+```{r}
+nkt <- AddModuleScore_UCell(nkt, features = list("Dysfunctional" = c("B3GAT1", "ZEB2", "KLRG1", "KLRK1", "TIGIT", "PDCD1", "LAG3", "CTLA4", "HAVCR2")))
+
+testb <- DotPlot(nkt, features = c("B3GAT1", "ZEB2", "KLRG1", "KLRK1", "TIGIT", "PDCD1", "LAG3", "CTLA4", "HAVCR2", "Dysfunctional_UCell"), group.by = "cellID_short")
+```

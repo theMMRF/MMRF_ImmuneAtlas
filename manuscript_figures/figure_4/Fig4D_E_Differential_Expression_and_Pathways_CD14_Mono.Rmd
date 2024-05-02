@@ -1,0 +1,265 @@
+---
+title: "Figure 4 - Differential Expression, Myeloid Compartment"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+Generates both the Volcano plot seen in Figure 4D (Myeloid CD14+ Mono Diff Expression) and the Pathway Analysis in Figure 4E (Myeloid CD14+ Mono Pathways)
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Setup
+```{r init}
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+output_volcano <- file.path(output_F3, "Volcano")
+dir.create(output_volcano, showWarnings = F, recursive = T)
+```
+
+## Figure 4D - Differential Expression across CD14+ Monocytes
+Using Limma-trend, correcting for siteXbatch
+Highlighting select markers
+```{r}
+library(paletteer)
+library(limma)
+
+# Subset cluster of interest, get expression matrix
+cluster_of_interest <- merged |> subset(subset = (lineage_group %in% c("M") & progression_group %in% c("NP", "RP") & !!sym(cluster_group) %in% c("Myeloid.0", "Myeloid.12", "Myeloid.2", "Myeloid.1", "Myeloid.8", "Myeloid.3")) & VJ_INTERVAL == "Baseline")
+expr <- as.matrix(GetAssayData(cluster_of_interest, slot = "data", assay = "RNA"))
+
+# Fit a model for NP and RP, correcting for siteXbatch
+design <- model.matrix(~ 0 + progression_group + siteXbatch, data = cluster_of_interest@meta.data)
+fit <- lmFit(expr, design)
+
+# Make a contrast for NP - RP (positive - NP enriched, negative - RP enriched), and fit with limma trend = TrUE
+x <- c("progression_groupRP - progression_groupNP")
+contrast <- makeContrasts(contrasts = x, levels = design) # NP is positive, RP is negative
+fit <- contrasts.fit(fit, contrast)
+fit <- eBayes(fit, trend = TRUE, robust = TRUE)
+
+# Get the table of fitted (adjusted) p-values, logFCs. Sort by the t statistic (effectively signed p-value). Break ties with logFC
+forVolcano <- topTable(fit, coef = 1, adjust = "BH", n = Inf, sort.by = "t", resort.by = "logFC") # Top by p.value - set 'sort.by' to 'logFC' for top by logFC
+
+# Select the top and bottom ten by t statistic (top up, top down) for labeling
+nGenes <- length(rownames(forVolcano))
+genelist <- rownames(forVolcano)[c(1:15, (nGenes - 14):nGenes)] # Top and bottom ten by t statistic (ties broken by logFC)
+geneList <- c("CXCL8", "IL1B", "CCL5", "CCL3", "CCL4", "MMP1", "MMP3", "CCL2", "CCL8", "TGFB1", "IL6", "CXCL1")
+# Volcano plot code (or heatmap)
+
+
+ISG15_lab <- c("IFI6", "IFIT3", "IFI44L", "MX1", "OAS1", "ISG15")
+SASP_lab <- c("CXCL8", "IL1B", "CCL5", "CCL3", "CCL4", "MMP1", "MMP3", "CCL2", "CCL8", "TGFB1", "IL6", "CXCL1")
+STRESS <- c("FKBP5", "TSC22D3", "KLF6", "TXNIP")
+
+colors_volcano <- paletteer_d("suffrager::CarolMan")
+# create custom key-value pairs for different cell-types
+# this can be achieved with nested ifelse statements
+keyvals.color <- ifelse(
+    rownames(forVolcano) %in% ISG15_lab, colors_volcano[[4]],
+    ifelse(rownames(forVolcano) %in% SASP_lab, colors_volcano[[1]],
+        ifelse(rownames(forVolcano) %in% STRESS, colors_volcano[[2]], "grey")
+    )
+)
+
+keyvals.alpha <- ifelse(
+    rownames(forVolcano) %in% ISG15_lab, 1,
+    ifelse(rownames(forVolcano) %in% SASP_lab, 1,
+        ifelse(rownames(forVolcano) %in% STRESS, 1, 0.5)
+    )
+)
+
+keyvals.color[is.na(keyvals.color)] <- "grey"
+names(keyvals.color)[keyvals.color == "grey"] <- "Other"
+names(keyvals.color)[keyvals.color == colors_volcano[[1]]] <- "Inflammatory"
+names(keyvals.color)[keyvals.color == colors_volcano[[4]]] <- "ISG15"
+names(keyvals.color)[keyvals.color == colors_volcano[[2]]] <- "Stress"
+
+selectLab <- rownames(forVolcano |> dplyr::filter(adj.P.Val < 10e-40 & abs(logFC) > 0.1))
+
+
+labels.color <- ifelse(
+    selectLab %in% ISG15_lab, colors_volcano[[4]],
+    ifelse(selectLab %in% SASP_lab, colors_volcano[[1]],
+        ifelse(selectLab %in% STRESS, colors_volcano[[2]], "grey")
+    )
+)
+
+
+annotations <- data.frame(
+    xpos = c(-Inf, Inf),
+    ypos = c(Inf, Inf),
+    annotateText = c(
+        "NP Enriched",
+        "RP Enriched"
+    ),
+    hjustvar = c(-.05, 1),
+    vjustvar = c(0.9, 0.9)
+)
+
+p <- forVolcano |> EnhancedVolcano(
+    lab = rownames(forVolcano),
+    x = "logFC",
+    y = "adj.P.Val",
+    title = bquote(CD14^"+" ~ "Classical Monocytes"),
+    selectLab = selectLab,
+    labCol = labels.color,
+    colCustom = keyvals.color,
+    colAlpha = keyvals.alpha,
+    caption = "",
+    xlim = c(-0.5, 0.5),
+    ylim = c(-5, 315),
+    pCutoff = 10e-50,
+    FCcutoff = 0.11,
+    pointSize = 3.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    max.overlaps = 20,
+    lengthConnectors = unit(0.007, "npc"),
+    labSize = 4.0
+) +
+    theme_prism() +
+    theme(plot.caption = element_blank(), plot.subtitle = element_blank()) +
+    geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), color = c(color_theme_binary[["NP"]], color_theme_binary[["RP"]]), size = 6)
+
+# Alternative rendering with no select highlights
+p2 <- forVolcano |> EnhancedVolcano(
+    lab = rownames(forVolcano),
+    x = "logFC",
+    y = "adj.P.Val",
+    title = "CD14+ Classical Monocytes",
+    selectLab = selectLab,
+    xlim = c(-0.5, 0.5),
+    ylim = c(-5, 315),
+    pCutoff = 10e-50,
+    FCcutoff = 0.1,
+    pointSize = 3.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    max.overlaps = 20,
+    lengthConnectors = unit(0.007, "npc"),
+    labSize = 4.0
+) +
+    theme_prism() +
+    theme(plot.caption = element_blank(), plot.subtitle = element_blank()) +
+    geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), color = c("#4f2b8e", "#285291"), size = 6)
+
+write.csv(forVolcano, file.path(output_volcano, "CD14_limma_markers_toptable.csv"))
+pdf_and_png(p, output_volcano, "limma_trend_np_rp_baseline_AUC_ClassicalMyeloid_select_SASP", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+pdf_and_png(p2, output_volcano, "limma_trend_np_rp_baseline_AUC_ClassicalMyeloid_select_SASP_DEFAULT_COLORS", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+```
+
+## Figure 4E - Computed pathways with ReactomePA
+
+```{r}
+library("org.Hs.eg.db")
+library(clusterProfiler)
+library(ReactomePA)
+
+forVolcano <- forVolcano |> arrange(logFC)
+gene_list <- rownames(forVolcano)
+symbols <- mapIds(org.Hs.eg.db, keys = gene_list, column = "ENTREZID", keytype = "SYMBOL")
+
+m_markers <- forVolcano |> arrange(logFC, "descending")
+m_markers$gene <- rownames(m_markers)
+gene_list <- rownames(m_markers)
+symbols <- bitr(gene_list, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = "org.Hs.eg.db")
+colnames(symbols) <- c("gene", "ENTREZID")
+m_markers <- dplyr::left_join(symbols, m_markers, by = "gene") # Drops unmapped
+rownames(m_markers) <- m_markers$ENTREZID
+
+logfc_m <- m_markers[, "logFC"]
+names(logfc_m) <- rownames(m_markers)
+logfc_m <- logfc_m |> sort(decreasing = T)
+
+cd8_gsea <- gsePathway(logfc_m,
+    pvalueCutoff = 0.2,
+    pAdjustMethod = "BH",
+    verbose = FALSE
+)
+write.csv(cd8_gsea, file.path(output_volcano, "cd14_mono_reactome.csv"))
+filt <- cd8_gsea |> dplyr::filter(p.adjust < 0.1)
+
+write.csv(symbols, file.path(output_volcano, "gene2id.csv"))
+results <- filt@result
+results <- cd8_gsea@result |> arrange(NES)
+results$Description_wrap <- stringr::str_wrap(results$Description, width = 45)
+
+results$Description_wrap <- factor(results$Description_wrap, levels = results$Description_wrap)
+
+results <- results |> dplyr::mutate(signed.p.adjust = -log10(p.adjust) * sign(NES))
+
+p2 <- results |>
+    arrange(NES) |>
+    ggplot() +
+    geom_bar(aes(y = Description_wrap, x = signed.p.adjust, fill = NES), stat = "identity") +
+    scale_fill_gradient2(
+        low =
+            fill_theme_binary[["NP"]],
+        mid = "white",
+        high = fill_theme_binary[["RP"]],
+        limits = c(-4, 4),
+        oob = squish
+    ) +
+    geom_vline(xintercept = 0, color = "black") +
+    theme_prism() +
+    theme(axis.text.y = element_text(size = 10)) +
+    xlab("Signed FDR") +
+    ylab("Significantly Enriched Pathways") +
+    labs(fill = "Normalized\nEnrichment\nScore") +
+    theme(legend.title = element_text())
+
+pdf_and_png(p2, output_volcano, "myeloid_reactomePA_pathways_test", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+
+p2 <- results |>
+    arrange(NES) |>
+    ggplot() +
+    geom_bar(aes(y = Description_wrap, x = NES, fill = signed.p.adjust), stat = "identity") +
+    scale_fill_gradient2(
+        low =
+            fill_theme_binary[["NP"]],
+        mid = "white",
+        high = fill_theme_binary[["RP"]],
+        limits = c(-4, 4),
+        oob = squish
+    ) +
+    geom_vline(xintercept = 0, color = "black") +
+    theme_prism() +
+    theme(axis.text.y = element_text(size = 10)) +
+    xlab("Normalized Enrichment Score") +
+    ylab("Significantly Enriched Pathways") +
+    labs(fill = "Sign(NES)*\nLog10(FDR)") +
+    theme(legend.title = element_text())
+
+pdf_and_png(p2, output_volcano, "myeloid_reactomePA_pathways_test_alt", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+```
+
+### Also save the leadning edge genes for each pathway
+```{r}
+output_leadingedge <- file.path(output_volcano, "M_LE")
+dir.create(output_leadingedge, recursive = T, showWarnings = F)
+for (idx in 1:nrow(results)) {
+    id <- results[idx, "ID"]
+    signaling <- results |> dplyr::filter(ID == id)
+    LE <- signaling$core_enrichment |> stringr::str_split("/")
+    filt_markers <- m_markers
+    rownames(filt_markers) <- filt_markers$ENTREZID
+    filt_markers <- filt_markers[LE[[1]], ]
+    filename <- paste0(gsub(" ", "_", signaling$Description, fixed = T), "_LE.csv")
+    filename <- paste0(gsub("/", "-slash-", filename, fixed = T), "_LE.csv")
+    filename <- paste0(gsub(":", "-COLON-", filename, fixed = T), "_LE.csv")
+
+    write.csv(filt_markers, file.path(output_leadingedge, filename))
+}
+```
+
+
+```{r}
+```

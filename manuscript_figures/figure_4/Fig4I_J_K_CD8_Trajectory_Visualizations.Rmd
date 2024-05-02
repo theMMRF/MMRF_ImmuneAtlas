@@ -1,0 +1,287 @@
+---
+title: "Figure 4 - Trajectory Visualization"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+Renders visuals for the CD8+ Trajectory Analysis in Figure 4 (4I, 4J, 4K)
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Setup - Load Trajectory Object
+```{r init}
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+
+cd8_seurat <- merged |> subset(lineage_group == "CD8")
+
+per_cell_cluster_info <- cd8_seurat@meta.data |> dplyr::select(subcluster_V03072023, cellname, color_sub, primary_id_color, color, cellID_short)
+per_cluster_info <- cd8_seurat@meta.data |> dplyr::distinct(subcluster_V03072023, color_sub, primary_id_color, color, cellID_short)
+
+sce_path <- "/opt/pmedseq-data/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/output/monocle3_cd8_LQ_included/slingshot_cd8_NEWMD_25/sce_slingshot_cd8_NEWMD_25.rds"
+sce <- readRDS(sce_path)
+
+output_traj <- file.path(output_F3, "Trajectory")
+dir.create(output_traj, showWarnings = F, recursive = T)
+```
+
+# Figure 4I - Setup UMAP Rendering
+
+```{r}
+X <- reducedDim(sce, "UMAP") |> as.data.frame()
+
+colnames(X)[1:2] <- c("Dim1", "Dim2")
+sds <- SlingshotDataSet(sce)
+
+
+clusterLabels <- slingClusterLabels(sds)
+connectivity <- slingMST(sds, as.df = T)
+clusters <- unique(connectivity$Cluster)
+nclus <- length(clusters)
+centers <- t(vapply(clusters, function(clID) {
+    w <- clusterLabels[, clID]
+    return(apply(X, 2, weighted.mean, w = w))
+}, rep(0, ncol(X)))) # gets center of UMAP points
+X <- X[rowSums(clusterLabels) > 0, , drop = FALSE]
+clusterLabels <- clusterLabels[rowSums(clusterLabels) > 0, ,
+    drop = FALSE
+]
+
+X$cellname <- rownames(X)
+X <- dplyr::left_join(X, per_cell_cluster_info, by = "cellname")
+
+centers <- centers |> as.data.frame()
+centers$Cluster <- rownames(centers)
+
+library(unikn)
+# test <- pal_unikn_pair[1:14]
+# test <- t(test)
+# library(paletteer)
+
+# palette <- paletteer_d("RColorBrewer::Spectral")
+# palette <- c("#2f4f4f", "#a52a2a", "#228b22", "#4b0082", "#ff8c00", "#deb887", "#00ff00", "#00bfff", "#0000ff", "#ff00ff", "#ffff54", "#dda0dd", "#ff1493", "#7fffd4") # paletteer_d("ggthemes::Classic_Cyclic")
+# palette <- colorRampPalette(palette)(14)
+# set.seed(SEED_TESTING)
+# palette <- permute(palette)
+
+
+
+p_umap <- ggplot(X, aes(x = Dim1, y = Dim2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = X$color_sub, color = X$color_sub)) +
+    theme_prism() +
+    NoLegend()
+
+# geom_point(aes(fill = sce$ident), col = "grey70", shape = 21) +
+
+mst_with_centers <- dplyr::left_join(connectivity, centers, by = "Cluster")
+
+
+centers <- mst_with_centers |> dplyr::distinct(Cluster, Dim1, Dim2)
+centers_nostart <- mst_with_centers |>
+    dplyr::filter(Order != 1) |>
+    dplyr::distinct(Cluster, Dim1, Dim2)
+centers_only_start <- mst_with_centers |>
+    dplyr::filter(Order == 1) |>
+    dplyr::distinct(Cluster, Dim1, Dim2)
+
+centers_nostart$subcluster_V03072023 <- centers_nostart$Cluster
+centers_only_start$subcluster_V03072023 <- centers_only_start$Cluster
+
+centers_nostart <- centers_nostart |> dplyr::left_join(per_cluster_info, by = "subcluster_V03072023")
+centers_only_start <- centers_only_start |> dplyr::left_join(per_cluster_info, by = "subcluster_V03072023")
+
+lin1_only <- dplyr::filter(mst_with_centers, Lineage == 1)
+p <- p_umap + geom_point(data = mst_with_centers, size = 6) +
+    geom_path(data = mst_with_centers %>% arrange(Order), aes(group = Lineage), size = 3) +
+    geom_path(data = lin1_only |> arrange(Order), aes(group = Lineage), size = 1.5, color = "red", fill = "red") +
+    geom_point(data = lin1_only, color = "red", fill = "red", size = 3) +
+    geom_label_repel(data = centers_nostart, aes(label = paste0(cellID_short)), label.size = 0.35, size = 6) +
+    geom_label_repel(data = centers_only_start, aes(label = paste0(cellID_short)), fill = "cyan", color = "black", label.size = 0.35, size = 6)
+
+p <- p +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0)) +
+    scale_x_reverse() +
+    scale_y_reverse()
+
+p <- p + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+
+
+pdf_and_png(p, output_traj, "UMAP_traj", pdfWidth = W_DBL, pdfHeight = H_FULL, scale = 3)
+```
+
+# Figure 4J - Compute density along Cytotoxicity pseudotime
+```{r}
+i <- 1
+
+X <- reducedDim(sce, "UMAP") |> as.data.frame()
+X_id <- X
+pt <- slingPseudotime(sce, na = T)
+
+pt_tmp <- pt
+colnames(pt_tmp)[i] <- "Pseudotime"
+
+colnames(X)[1:2] <- c("Dim1", "Dim2")
+X_id$ident <- sce$ident
+
+
+
+X_id$progression_group <- sce$progression_group
+X_id$VJ_INTERVAL <- sce$VJ_INTERVAL
+X_pt <- cbind(X_id, pt_tmp)
+
+X_pt <- X_pt |> arrange(!is.na(Pseudotime), Pseudotime)
+
+test <- X_pt |>
+    group_by(ident) |>
+    summarise(median = median(Pseudotime, na.rm = T)) |>
+    arrange(median)
+
+X_pt$ident <- factor(X_pt$ident, levels = test$ident)
+
+X_pt_filt <- X_pt |> dplyr::filter(progression_group %in% c("NP", "RP") & VJ_INTERVAL == "Baseline")
+p_density <- ggplot(X_pt_filt, aes(x = Pseudotime)) +
+    geom_density(aes(fill = progression_group, group = progression_group), color = "black", alpha = 0.5) +
+    theme_prism() +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    theme(axis.title.x = element_blank()) +
+    ylab("Cell Relative Density")
+
+legend_density <- cowplot::get_legend(p_density)
+```
+
+# Figure 4K - Display GAM of select marker expression over pseudotime
+
+```{r}
+geneList <- list("Naive" = c("SELL", "CCR7", "TCF7", "CD27", "CD28"), "Cytotoxic" = c("NKG7", "PRF1", "GNLY", "FGFBP2", "GZMH"))
+i <- 1
+library(paletteer)
+naive_colors <- paletteer::paletteer_d("calecopal::sbchannel")
+cytotoxic_colors <- paletteer::paletteer_d("calecopal::eschscholzia")
+
+
+w <- slingCurveWeights(sce)
+idx <- 0
+if (i == "ALL") {
+    df <- data.frame(pseudotime = pt, weight = rep(1, length(pt)))
+} else {
+    df <- data.frame(pseudotime = pt[, i], weight = w[, i])
+}
+
+for (geneid in geneList[["Naive"]]) {
+    y <- logcounts(sce)[geneid, , drop = FALSE][1, ]
+    df[[geneid]] <- y
+}
+for (geneid in geneList[["Cytotoxic"]]) {
+    y <- logcounts(sce)[geneid, , drop = FALSE][1, ]
+    df[[geneid]] <- y
+}
+
+df$VJ_INTERVAL <- sce$VJ_INTERVAL
+
+df <- dplyr::filter(df, VJ_INTERVAL == "Baseline")
+
+df_melt <- gather(df, gene, expression, -c(pseudotime, weight, VJ_INTERVAL))
+df_melt$gene <- factor(df_melt$gene, levels = c("TCF7", "CCR7", "SELL", "CD27", "CD28", "NKG7", "GNLY", "GZMH", "FGFBP2", "PRF1"))
+p <- ggplot()
+p <- p +
+    geom_smooth(data = df_melt, aes(x = pseudotime, y = expression, weight = weight, color = gene), method = "gam", formula = y ~ s(x))
+
+# For legend
+fake_df <- df_melt |> dplyr::distinct(gene, .keep_all = T)
+fake_df_naive <- fake_df |> dplyr::filter(gene %in% c("TCF7", "CCR7", "SELL", "CD27", "CD28"))
+fake_df_naive <- do.call("rbind", replicate(20, fake_df_naive, simplify = FALSE))
+fake_df_naive$pseudotime <- fake_df_naive$pseudotime + rnorm(length(fake_df_naive$pseudotime), mean = 0, sd = 1)
+fake_df_naive$expression <- fake_df_naive$expression + rnorm(length(fake_df_naive$expression), mean = 0, sd = 1)
+
+fake_df_cyto <- fake_df |> dplyr::filter(gene %in% c("NKG7", "GNLY", "GZMH", "FGFBP2", "PRF1"))
+fake_df_cyto <- do.call("rbind", replicate(20, fake_df_cyto, simplify = FALSE))
+fake_df_cyto$pseudotime <- fake_df_cyto$pseudotime + rnorm(length(fake_df_cyto$pseudotime), mean = 0, sd = 1)
+fake_df_cyto$expression <- fake_df_naive$expression + rnorm(length(fake_df_cyto$expression), mean = 0, sd = 1)
+
+p_fake_naive <- ggplot() +
+    geom_smooth(data = fake_df_naive, aes(x = pseudotime, y = expression, weight = weight, color = gene), method = "gam", formula = y ~ s(x)) +
+    scale_color_manual(values = c(unlist(naive_colors))) +
+    labs(color = "Naive")
+p_fake_cyto <- ggplot() +
+    geom_smooth(data = fake_df_cyto, aes(x = pseudotime, y = expression, weight = weight, color = gene), method = "gam", formula = y ~ s(x)) +
+    scale_color_manual(values = c(unlist(cytotoxic_colors))) +
+    labs(color = "Cytotoxic")
+
+
+legend_naive <- cowplot::get_legend(p_fake_naive)
+legend_cyto <- cowplot::get_legend(p_fake_cyto)
+
+legend <- cowplot::plot_grid(NULL, legend_naive, legend_cyto, NULL, nrow = 3, ncol = 1, align = "hv", rel_heights = c(-0.33, 1, 1, 1), axis = "t")
+legend_top <- cowplot::plot_grid(legend_density, align = "hv", axis = "l")
+
+p_expr <- p + scale_color_manual(values = c(unlist(naive_colors), unlist(cytotoxic_colors))) +
+    theme_prism() +
+    ylab("Normalized Gene Expression") +
+    xlab(paste0("Pseudotime")) + NoLegend() # Figure out how to handle the legend?
+
+p_grid <- cowplot::plot_grid(
+    cowplot::plot_grid(p_density + NoLegend(), p_expr, nrow = 2, ncol = 1, align = "hv", axis = "l"),
+    cowplot::plot_grid(legend_top, legend, nrow = 2, ncol = 1, align = "h", axis = "t"),
+    rel_widths = c(1, 0.15)
+)
+
+pdf_and_png(p_grid, output = output_traj, filename = "density_and_gene_expr_aligned", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+```
+
+```{r}
+sce$pseudo2 <- slingPseudotime(sce, na = F)[, i]
+fix <- data.frame(colData(sce)[, names(colData(sce)) != "slingshot", drop = FALSE])
+
+test <- fix |>
+    group_by(public_id) |>
+    summarise(pseudo2_mean = mean(pseudo2))
+
+test2 <- distinct(fix[, c("public_id", "VJ_INTERVAL", "progression_group")])
+
+per_pat_distr <- dplyr::left_join(test, test2, by = "public_id")
+per_pat_distr <- per_pat_distr |> dplyr::filter(VJ_INTERVAL %in% "Baseline", progression_group %in% c("NP", "RP"))
+
+summary_df <- per_pat_distr %>%
+    dplyr::group_by(progression_group) %>%
+    dplyr::summarise(
+        mean = mean(pseudo2_mean), std_error = plotrix::std.error(pseudo2_mean),
+        n = n(),
+        .groups = "drop_last"
+    )
+
+summary_df <- summary_df %>%
+    mutate(error = std_error)
+limitsub <- aes(ymax = mean + error, ymin = mean - error)
+
+
+p <- ggplot(data = summary_df, aes(x = progression_group, y = mean, fill = progression_group, color = progression_group)) +
+    geom_bar(stat = "identity", position = position_dodge()) +
+    geom_errorbar(limitsub, width = 0.25, position = position_dodge(width = 0.9)) +
+    geom_jitter(width = 0.25, data = per_pat_distr, shape = 1, aes(x = progression_group, y = pseudo2_mean)) +
+    scale_color_prism("floral") +
+    scale_fill_prism("floral") +
+    guides(y = "prism_offset_minor") +
+    theme_prism(base_size = 16) +
+    theme(legend.position = "none")
+
+pdf_and_png(p, output, paste0("per_pat_pseudotime_", i), pdfWidth = 4, pdfHeight = 6)
+t.test(per_pat_distr[per_pat_distr$progression_group == "NP", "pseudo2_mean"], per_pat_distr[per_pat_distr$progression_group == "RP", "pseudo2_mean"])
+```

@@ -1,0 +1,286 @@
+---
+title: "Figure 4 - Differential Expression (NkT)"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+Performs differential expression analysis and pathway analysis across all CD3+ cells. Figures 4g, h
+
+Note - as limma creates a dense matrix, this will take a large amount of RAM to run 
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Setup
+```{r init}
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+output_volcano <- file.path(output_F3, "Volcano")
+dir.create(output_volcano, showWarnings = F, recursive = T)
+```
+
+```{r}
+library(paletteer)
+library(EnhancedVolcano)
+nkt <- merged |> subset(subset = (lineage_group %in% c("CD8", "CD4") & VJ_INTERVAL == "Baseline" & progression_group %in% c("NP", "RP")))
+rm(merged)
+gc()
+```
+
+## Figure 4g - Limma and Volcano Plot
+rm and gc statements are to mitigate the in-use memory
+```{r}
+Idents(nkt) <- nkt$progression_group
+
+library(limma)
+
+# Subset cluster of interest, get expression matrix
+expr <- as.matrix(GetAssayData(nkt, slot = "data", assay = "RNA"))
+md <- nkt@meta.data
+rm(nkt)
+gc()
+# Fit a model for NP and RP, correcting for siteXbatch
+design <- model.matrix(~ 0 + progression_group + siteXbatch, data = md)
+rm(md)
+gc()
+
+fit <- lmFit(expr, design)
+rm(expr)
+gc()
+# Make a contrast for NP - RP (positive - NP enriched, negative - RP enriched), and fit with limma trend = TrUE
+x <- c("progression_groupRP - progression_groupNP")
+contrast <- makeContrasts(contrasts = x, levels = design) # NP is positive, RP is negative
+fit <- contrasts.fit(fit, contrast)
+fit <- eBayes(fit, trend = TRUE, robust = TRUE)
+
+# Get the table of fitted (adjusted) p-values, logFCs. Sort by the t statistic (effectively signed p-value). Break ties with logFC
+forVolcano <- topTable(fit, coef = 1, adjust = "BH", n = Inf, sort.by = "t", resort.by = "logFC") # Top by p.value - set 'sort.by' to 'logFC' for top by logFC
+write.csv(forVolcano, file.path(output_volcano, "CD8_CD4_NP_v_RP_LIMMA_VolcanoPlot.csv"))
+
+forVolcano$gene <- rownames(forVolcano)
+forVolcano$avg_log2FC <- forVolcano$logFC
+forVolcano$p_val_adj <- forVolcano$adj.P.Val
+forVolcano$p_val <- forVolcano$P
+
+nprp <- forVolcano
+
+ISG15_lab <- c("IFI6", "IFIT3", "IFI44L", "ISG15", "MX1")
+NAIVE_lab <- c("LTB", "TCF7", "SELL")
+CYTOTOX_lab <- c("GZMH", "KLRD1", "NKG7", "FGFBP2", "CCL5", "GZMB", "GNLY", "GZMA", "CD8A", "PRF1", "CST7", "CTSW")
+STRESS_lab <- c("TXNIP", "FKBP5", "TSC22D3", "KLF6")
+
+colors_volcano <- paletteer_d("suffrager::CarolMan")
+
+# create custom key-value pairs for different cell-types
+# this can be achieved with nested ifelse statements
+keyvals.color <- ifelse(
+    rownames(nprp) %in% ISG15_lab, colors_volcano[[4]],
+    ifelse(rownames(nprp) %in% NAIVE_lab, colors_volcano[[3]],
+        ifelse(rownames(nprp) %in% CYTOTOX_lab, colors_volcano[[1]],
+            ifelse(rownames(nprp) %in% STRESS_lab, colors_volcano[[2]], "grey")
+        )
+    )
+)
+keyvals.color[is.na(keyvals.color)] <- "grey"
+names(keyvals.color)[keyvals.color == "grey"] <- "Other"
+names(keyvals.color)[keyvals.color == colors_volcano[[2]]] <- "Stress"
+names(keyvals.color)[keyvals.color == colors_volcano[[1]]] <- "Cytotoxic"
+names(keyvals.color)[keyvals.color == colors_volcano[[3]]] <- "Naive"
+names(keyvals.color)[keyvals.color == colors_volcano[[4]]] <- "ISG15"
+
+keyvals.alpha <- ifelse(
+    rownames(nprp) %in% ISG15_lab, 1,
+    ifelse(rownames(nprp) %in% NAIVE_lab, 1,
+        ifelse(rownames(nprp) %in% CYTOTOX_lab, 1,
+            ifelse(rownames(nprp) %in% STRESS_lab, 1, 0.5)
+        )
+    )
+)
+
+keyvals.shape <- ifelse(
+    rownames(nprp) %in% ISG15_lab, 17,
+    ifelse(rownames(nprp) %in% NAIVE_lab, 64,
+        ifelse(rownames(nprp) %in% CYTOTOX_lab, 3,
+            ifelse(rownames(nprp) %in% STRESS_lab, 2, 1)
+        )
+    )
+)
+
+keyvals.shape[is.na(keyvals.shape)] <- 1
+names(keyvals.shape)[keyvals.shape == 1] <- "Other"
+names(keyvals.shape)[keyvals.shape == 2] <- "Stress"
+names(keyvals.shape)[keyvals.shape == 3] <- "Cytotoxic"
+names(keyvals.shape)[keyvals.shape == 17] <- "Naive"
+names(keyvals.shape)[keyvals.shape == 64] <- "ISG15"
+
+selectLab <- rownames(nprp |> dplyr::filter(p_val < 10e-50 & abs(avg_log2FC) > 0.1))
+
+
+labels.color <- ifelse(
+    selectLab %in% ISG15_lab, colors_volcano[[4]],
+    ifelse(selectLab %in% NAIVE_lab, colors_volcano[[3]],
+        ifelse(selectLab %in% CYTOTOX_lab, colors_volcano[[1]],
+            ifelse(selectLab %in% STRESS_lab, colors_volcano[[2]], "grey")
+        )
+    )
+)
+library(EnhancedVolcano)
+
+annotations <- data.frame(
+    xpos = c(-Inf, Inf),
+    ypos = c(Inf, Inf),
+    annotateText = c(
+        "NP Enriched",
+        "RP Enriched"
+    ),
+    hjustvar = c(-.05, 1),
+    vjustvar = c(0.9, 0.9)
+)
+
+
+p <- nprp |> EnhancedVolcano(
+    lab = rownames(nprp),
+    x = "avg_log2FC",
+    y = "p_val_adj",
+    title = "CD3+ T Cells",
+    selectLab = selectLab,
+    labCol = labels.color,
+    colCustom = keyvals.color,
+    colAlpha = keyvals.alpha,
+    caption = "",
+    xlim = c(-0.5, 0.5),
+    ylim = c(-5, 325),
+    pCutoff = 10e-50,
+    FCcutoff = 0.1,
+    pointSize = 3.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    max.overlaps = 20,
+    lengthConnectors = unit(0.007, "npc"),
+    labSize = 4.0
+) +
+    theme_prism() +
+    theme(plot.caption = element_blank(), plot.subtitle = element_blank()) +
+    geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), color = c(color_theme_binary[["NP"]], color_theme_binary[["RP"]]), size = 6)
+
+
+
+pdf_and_png(p, output_volcano, "volcano_lineage_group_np_rp", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+```
+
+
+## Figure 4h - Run reactomePA to get top pathways. Select subset of these pathways to visualize in Main figure (due to space)
+```{r}
+library("org.Hs.eg.db")
+library(clusterProfiler)
+library(ReactomePA)
+
+nprp$logFC <- nprp$avg_log2FC
+
+nprp <- nprp |> arrange(logFC)
+gene_list <- rownames(nprp)
+symbols <- mapIds(org.Hs.eg.db, keys = gene_list, column = "ENTREZID", keytype = "SYMBOL")
+
+m_markers <- nprp |> arrange(logFC, "descending")
+m_markers$gene <- rownames(m_markers)
+gene_list <- rownames(m_markers)
+symbols <- bitr(gene_list, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = "org.Hs.eg.db")
+colnames(symbols) <- c("gene", "ENTREZID")
+m_markers <- dplyr::left_join(symbols, m_markers, by = "gene") # Drops unmapped
+rownames(m_markers) <- m_markers$ENTREZID
+
+logfc_m <- m_markers[, "logFC"]
+names(logfc_m) <- rownames(m_markers)
+logfc_m <- logfc_m |> sort(decreasing = T)
+
+cd8_gsea <- gsePathway(logfc_m,
+    pvalueCutoff = 0.2,
+    pAdjustMethod = "BH",
+    verbose = FALSE
+)
+library(enrichplot)
+
+write.csv(cd8_gsea, file.path(output_volcano, "nkt_gsea_results.csv"))
+
+filt <- cd8_gsea |> dplyr::filter(p.adjust < 0.1)
+
+
+results <- filt@result
+results <- cd8_gsea@result |> arrange(NES)
+
+results <- results |> dplyr::filter(Description %in% c(
+    "Activation of the mRNA upon binding of the cap-binding complex and eIFs, and subsequent binding to 43S",
+    "Translation initiation complex formation",
+    "Ribosomal scanning and start codon recognition",
+    "Formation of the ternary complex, and subsequently, the 43S complex",
+    "SARS-CoV-2 modulates host translation machinery",
+    "Respiratory electron transport",
+    "SARS-CoV-1 modulates host translation machinery",
+    "Respiratory electron transport, ATP synthesis by chemiosmotic coupling, and heat production by uncoupling proteins.",
+    "The citric acid (TCA) cycle and respiratory electron transport",
+    "Activation of Matrix Metalloproteinases",
+    "Signaling by Interleukins",
+    "Immunoregulatory interactions between a Lymphoid and a non-Lymphoid cell",
+    "Interleukin-10 signaling",
+    "MHC class II antigen presentation",
+    "Adherens junctions interactions",
+    "Cross-presentation of soluble exogenous antigens (endosomes)",
+    "FGFR2 ligand binding and activation",
+    "Antimicrobial peptides",
+    "Chemokine receptors bind chemokines",
+    "Peptide ligand-binding receptors"
+))
+results$Description_wrap <- stringr::str_wrap(results$Description, width = 45)
+
+results$Description_wrap <- factor(results$Description_wrap, levels = results$Description_wrap)
+results <- results |> dplyr::mutate(signed.p.adjust = -log10(p.adjust) * sign(NES))
+
+p2 <- results |>
+    arrange(NES) |>
+    ggplot() +
+    geom_bar(aes(y = Description_wrap, x = NES, fill = signed.p.adjust), stat = "identity") +
+    scale_fill_gradient2(
+        low =
+            fill_theme_binary[["NP"]],
+        mid = "white",
+        high = fill_theme_binary[["RP"]]
+    ) +
+    geom_vline(xintercept = 0, color = "black") +
+    theme_prism() +
+    theme(axis.text.y = element_text(size = 10)) +
+    xlab("Normalized Enrichment Score") +
+    ylab("Significantly Enriched Pathways") +
+    labs(fill = "Sign(NES)*\nLog10(FDR)") +
+    theme(legend.title = element_text())
+
+
+pdf_and_png(p2, output_volcano, "cd8_reactomePA_pathways_test", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+```
+
+Output leading edge genes
+```{r}
+output_leadingedge <- file.path(output_volcano, "CD3_LE")
+dir.create(output_leadingedge, recursive = T, showWarnings = F)
+for (idx in 1:nrow(results)) {
+    id <- results[idx, "ID"]
+    signaling <- results |> dplyr::filter(ID == id)
+    LE <- signaling$core_enrichment |> stringr::str_split("/")
+    filt_markers <- m_markers
+    rownames(filt_markers) <- filt_markers$ENTREZID
+    filt_markers <- filt_markers[LE[[1]], ]
+    filename <- paste0(sub(" ", "_", signaling$Description), "_LE.csv")
+
+    write.csv(filt_markers, file.path(output_leadingedge, filename))
+}
+```
+
+
+```{r}
+```
