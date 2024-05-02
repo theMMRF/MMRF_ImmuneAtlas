@@ -1,0 +1,2027 @@
+---
+title: "Figure 2 - Figure Generation"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+rmarkdown::render("PAPER_FIG2.Rmd", output_format = "html_document", output_file = "PAPER_FIG2.html", output_dir = "/opt/megaseq-data/wcpilch")
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>",
+    out.width = "100%",
+    out.height = "100%"
+)
+```
+
+# Load object and metadata
+```{r init}
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+output_F2 <- file.path(output, "FIG2")
+dir.create(output_F2, recursive = T)
+```
+
+
+```{r}
+bl <- newMD |>
+    dplyr::filter(VJ_INTERVAL == "Baseline") |>
+    dplyr::distinct(public_id, progression_group, censpfs, pfscdy, d_tx_induction_cat)
+```
+
+Adding different internal cluster name based on lineage_group and lineage_order for determining cluster colors.
+
+See metadata file
+```{r sample_id_rename}
+# merged@meta.data <- merged@meta.data |> dplyr::left_join(cluster_naming, by = "subcluster_V03072023")
+rownames(merged@meta.data) <- merged$cellname
+
+merged$display_name <- paste0(merged$lineage_group, "_", merged$lineage_order)
+```
+
+# Setting Main UMAP colors
+
+```{r}
+library(paletteer)
+library(RColorBrewer)
+color_list_base <- list(
+    "M" = paletteer_d("ggsci::teal_material"),
+    "CD4" = paletteer_d("ggsci::purple_material"),
+    "B" = paletteer_d("ggsci::cyan_material"),
+    "P" = paletteer_d("ggsci::pink_material"),
+    "E" = paletteer_d("ggsci::deep_orange_material"),
+    "CD8" = paletteer_d("ggsci::amber_material"),
+    "Nk" = paletteer_d("ggsci::lime_material"),
+    "LQ" = paletteer_d("ggsci::grey_material")[[5]],
+    "Other" = paletteer_d("ggsci::indigo_material")
+)
+
+color_counts <- table(cluster_naming$lineage_group)
+
+color_list_expanded <- list()
+all_colors <- c()
+all_colors_ids <- c()
+primary_id_color <- list()
+for (i in names(color_list_base)) {
+    if (i == "LQ") {
+        color_list_expanded[[i]] <- rep(color_list_base[[i]], color_counts[[i]])
+    } else {
+        color_list_expanded[[i]] <- colorRampPalette(color_list_base[[i]][3:8])(color_counts[[i]])
+    }
+
+    all_colors <- c(all_colors, color_list_expanded[[i]])
+    all_colors_ids <- c(all_colors_ids, paste0(i, "_", 1:color_counts[[i]]))
+
+    if (i == "Nk") {
+        primary_id_color[[i]] <- color_list_base[[i]][[8]]
+    } else if (i == "CD8") {
+        primary_id_color[[i]] <- color_list_base[[i]][[7]]
+    } else {
+        primary_id_color[[i]] <- color_list_expanded[[i]][ceiling(color_counts[[i]] / 2)]
+    }
+}
+
+
+color_primary_df <- data.frame(lineage_group = names(primary_id_color), primary_id_color = unlist(primary_id_color))
+color_df <- data.frame(display_name = all_colors_ids, color = all_colors)
+```
+
+# Setting up colors for sub-compartment UMAPS
+
+rcartocolor::Antique
+rcartocolor::Vivid
+rcartocolor::Pastel
+
+```{r}
+library(paletteer)
+library(RColorBrewer)
+color_list_base_subcomp <- list(
+    "M" = paletteer_d("rcartocolor::Vivid")[c(1:11)],
+    "CD4" = paletteer_d("rcartocolor::Vivid")[c(1:11)],
+    "B" = paletteer_d("rcartocolor::Vivid")[c(1:11)],
+    "P" = paletteer_d("rcartocolor::Vivid")[c(1:11)],
+    "E" = paletteer_d("rcartocolor::Antique")[c(1:9, 11)],
+    "CD8" = paletteer_d("rcartocolor::Antique")[c(1:9, 11)],
+    "Nk" = paletteer_d("rcartocolor::Pastel")[c(1:10)],
+    "LQ" = paletteer_d("ggsci::grey_material")[[5]],
+    "Other" = paletteer_d("rcartocolor::Pastel")[c(1:10)]
+)
+
+color_counts_subcomp <- table(cluster_naming$lineage_group)
+
+color_list_expanded_subcomp <- list()
+all_colors_subcomp <- c()
+all_colors_ids_subcomp <- c()
+for (i in names(color_list_base_subcomp)) {
+    if (i == "LQ") {
+        color_list_expanded_subcomp[[i]] <- rep(color_list_base_subcomp[[i]], color_counts[[i]])
+    } else {
+        color_list_expanded_subcomp[[i]] <- colorRampPalette(color_list_base_subcomp[[i]])(color_counts[[i]])
+    }
+
+    all_colors_subcomp <- c(all_colors_subcomp, color_list_expanded_subcomp[[i]])
+    all_colors_ids_subcomp <- c(all_colors_ids_subcomp, paste0(i, "_", 1:color_counts[[i]]))
+}
+
+color_df_sub <- data.frame(display_name = all_colors_ids_subcomp, color_sub = all_colors_subcomp)
+```
+
+Saving color lists
+
+```{r}
+library(ggprism)
+mergedUMAP <- merged[["umap"]]@cell.embeddings |> as.data.frame()
+mergedUMAP$cellname <- rownames(merged@meta.data)
+md <- merged@meta.data
+md <- dplyr::left_join(md, mergedUMAP, by = "cellname")
+# md <- dplyr::left_join(md, color_df, by = "display_name")
+# md <- dplyr::left_join(md, color_primary_df, by = "lineage_group")
+# md <- dplyr::left_join(md, color_df_sub, by = "display_name")
+
+
+
+# md$cellID_general <- factor(md$cellID_general, levels = c(
+#     "T Cell",
+#     "Nk",
+#     "B Cell",
+#     "Myeloid",
+#     "Erythroid",
+#     "Plasma",
+#     "Other",
+#     "LQ"
+# ))
+
+lineage_label <- data.frame(lineage_group = c("CD4", "CD8", "B", "M", "Nk", "P", "E", "Other", "LQ"), lineage_name = c("CD4+ T Cell", "CD8+ T Cell", "B Cell", "Myeloid", "Nk Cell", "Plasma", "Erythroid", "Other", "LQ/Doublet"))
+
+tmp <- md |> dplyr::distinct(subcluster_V03072023, color, primary_id_color, color_sub)
+
+write.csv(tmp, file.path(output_F2, "color_lists.csv"))
+```
+
+# Figure 2A - Full UMAP
+
+```{r}
+md <- md |> dplyr::mutate(lineage_group_split_erythroid = dplyr::case_when(
+    lineage_group == "E" ~ dplyr::case_when(
+        subcluster_V03072023_compartment %in% c("BEry") ~ "EB",
+        subcluster_V03072023_compartment %in% c("Ery") ~ "EC",
+        .default = "ERROR"
+    ),
+    .default = lineage_group
+))
+
+md_grouping_centers <- md |>
+    dplyr::group_by(lineage_group_split_erythroid) |>
+    summarise(UMAP_1 = median(UMAP_1), UMAP_2 = median(UMAP_2)) |>
+    dplyr::left_join(md |> dplyr::distinct(lineage_group, lineage_group_split_erythroid),
+        by = "lineage_group_split_erythroid"
+    ) # don't do this
+
+md_grouping_centers <- dplyr::left_join(md_grouping_centers, color_primary_df, by = "lineage_group") |>
+    dplyr::left_join(lineage_label, by = "lineage_group") |>
+    dplyr::filter(lineage_group != "LQ") |>
+    dplyr::mutate(lineage_name_split_erythroid = dplyr::case_when(
+        lineage_group_split_erythroid == "EB" ~ "Erythroid\n(Erythroblasts)",
+        lineage_group_split_erythroid == "EC" ~ "Erythroid\n(Erythrocytes)",
+        .default = lineage_name
+    ))
+
+md_ordered <- md
+md_ordered$lineage_group <- factor(md_ordered$lineage_group, levels = c("CD4", "CD8", "B", "M", "Nk", "P", "E", "Other", "LQ"))
+md_ordered <- md_ordered |> arrange(desc(lineage_group), desc(lineage_order))
+p <- md_ordered |>
+    ggplot(aes(x = UMAP_1, y = UMAP_2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = md_ordered$color, colour = md_ordered$color)) +
+    NoLegend() +
+    theme_prism()
+
+p_label <- p + geom_label_repel(data = md_grouping_centers, label.size = 1, colour = "white", size = 6, fill = md_grouping_centers$primary_id_color, aes(label = lineage_name_split_erythroid))
+
+
+p_label <- p_label +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p_label <- p_label + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+paths_umap_with_label <- pdf_and_png(p_label, output_F2, "full_umap_custom_colors", pdfWidth = 10, pdfHeight = 10)
+
+p <- p +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p <- p + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+
+paths_umap_no_label <- pdf_and_png(p, output_F2, "full_umap_custom_colors_nolabel", pdfWidth = 10, pdfHeight = 10)
+```
+
+## With Labels
+```{r}
+knitr::include_graphics(paths_umap_with_label[["png"]])
+```
+
+## Without Label
+```{r}
+knitr::include_graphics(paths_umap_no_label[["png"]])
+```
+
+# Fig 2B - FeaturePlots
+
+## Option A - Render horizontal expression level bar, independent scale per bar.
+
+```{r}
+fp <- list()
+
+featlist <- c("CD3D", "CD247", "LYZ", "CD79A", "MZB1", "HBB")
+
+for (feat in featlist) {
+    fp[[feat]] <- FeaturePlot(merged, features = feat) + theme_prism() + NoAxes() + theme(legend.position = "bottom", legend.box.spacing = unit(0, "in"))
+}
+
+p <- cowplot::plot_grid(plotlist = fp, nrow = 1)
+
+PATHS <- pdf_and_png(p, output_F2, filename = "feat_test", pdfWidth = 15, pdfHeight = 3)
+
+knitr::include_graphics(PATHS[["png"]])
+```
+
+## Option B - Fix scale to 0-6, render legend only for the last plot.
+
+```{r}
+fp <- list()
+
+featlist <- c("CD3D", "CD247", "CD79A", "LYZ", "MZB1", "HBB")
+
+for (feat in featlist) {
+    fp[[feat]] <- FeaturePlot(merged, features = feat, min.cutoff = 0, max.cutoff = 6, order = T) + theme_prism() + NoAxes()
+    if (feat != "HBB") {
+        fp[[feat]] <- fp[[feat]] + NoLegend()
+    }
+}
+
+p <- cowplot::plot_grid(plotlist = fp, nrow = 1, rel_widths = c(1, 1, 1, 1, 1, 1.38))
+
+PATHS <- pdf_and_png(p, output_F2, filename = "feat_test_nolegend_0_6_cutoff", pdfWidth = 15, pdfHeight = 3)
+
+knitr::include_graphics(PATHS[["png"]])
+```
+
+
+
+# Figure 2C - Stacked Bar Charts
+
+## Option A - Split by Progression Group
+
+```{r}
+md_bl <- md_ordered |> dplyr::filter(VJ_INTERVAL == "Baseline" & lineage_group != "LQ" & progression_group %in% c("NP", "RP"))
+
+
+generalCounts <- table(md_bl$public_id, md_bl[, "display_name"])
+generalProp <- (generalCounts / rowSums(generalCounts)) |> as.data.frame()
+colnames(generalProp) <- list("public_id", "display_name", "count")
+
+md_bl_subset <- md_bl |> dplyr::distinct(public_id, progression_group)
+md_name_subset <- md_bl |> dplyr::distinct(display_name, lineage_group, lineage_order, primary_id_color, color)
+
+patRatios <- dplyr::left_join(generalProp, md_bl_subset, by = "public_id")
+patRatios <- dplyr::left_join(patRatios, md_name_subset, by = "display_name")
+
+md_bl_sel <- md_ordered |> dplyr::distinct(lineage_group, display_name, lineage_order, color, primary_id_color, subcluster_V03072023)
+md_bl_sel_2 <- md_ordered |> dplyr::distinct(lineage_group, primary_id_color)
+
+patRatios$display_name <- factor(patRatios$display_name, levels = rev(unique(md_ordered$display_name)))
+patRatios$lineage_group <- factor(patRatios$lineage_group, levels = (unique(md_ordered$lineage_group)))
+patRatios <- patRatios |> na.omit(axis = 2)
+
+
+
+
+
+# cell_counts <- table(md_bl$display_name, md_bl$progression_group) |> as.data.frame()
+# colnames(cell_counts) <- list("display_name", "progression_group", "count")
+# cell_counts$display_name <- factor(cell_counts$display_name, levels = unique(md_bl$display_name))
+# cell_counts <- cell_counts |>
+#     dplyr::arrange(desc(display_name)) |>
+#     na.omit(axis = 2)
+
+# cell_counts2 <- table(md_bl$lineage_group, md_bl$progression_group) |> as.data.frame()
+# colnames(cell_counts2) <- list("lineage_group", "progression_group", "count")
+# cell_counts2$lineage_group <- factor(cell_counts2$lineage_group, levels = unique(md_bl$lineage_group))
+
+# cell_counts2 <- cell_counts2 |>
+#     dplyr::arrange(desc(lineage_group)) |>
+#     na.omit(axis = 2)
+
+
+md_bl_sel <- md_ordered |> dplyr::distinct(lineage_group, display_name, lineage_order, color, primary_id_color, subcluster_V03072023)
+md_bl_sel_2 <- md_ordered |> dplyr::distinct(lineage_group, primary_id_color)
+
+# cell_counts <- dplyr::left_join(cell_counts, md_bl_sel, by = "display_name")
+# cell_counts2 <- dplyr::left_join(cell_counts2, md_bl_sel_2, by = "lineage_group")
+# cell_counts2 <- cell_counts2 |> dplyr::left_join(lineage_label, by = "lineage_group")
+
+# cell_counts <- cell_counts %>%
+#     group_by(progression_group) %>%
+#     mutate(pct = prop.table(count))
+
+
+# cell_counts2 <- cell_counts2 %>%
+#     group_by(progression_group) %>%
+#     mutate(pct = prop.table(count))
+
+
+cell_counts <- patRatios |>
+    group_by(progression_group, display_name) |>
+    dplyr::summarise(mean = mean(count)) |>
+    group_by(progression_group) |>
+    mutate(pct = prop.table(mean))
+
+cell_counts2 <- patRatios |>
+    group_by(public_id, progression_group, lineage_group) |>
+    dplyr::summarise(sum_lin = sum(count)) |>
+    group_by(progression_group, lineage_group) |>
+    dplyr::summarise(mean_lin = mean(sum_lin)) |>
+    group_by(progression_group) |>
+    mutate(pct = prop.table(mean_lin))
+
+
+cell_counts <- cell_counts |>
+    dplyr::left_join(md_bl_sel, by = "display_name")
+
+cell_counts2 <- cell_counts2 |>
+    dplyr::left_join(md_bl_sel_2, by = "lineage_group") |>
+    dplyr::arrange(desc(lineage_group))
+cell_counts2 <- cell_counts2 |> dplyr::left_join(lineage_label, by = "lineage_group")
+
+p <- ggplot(cell_counts, aes(x = progression_group, y = pct)) +
+    geom_col(position = "fill", fill = cell_counts$color, color = cell_counts$color, aes(x = progression_group, y = pct), show.legend = F) +
+    geom_col(data = cell_counts2, position = "fill", fill = cell_counts2$primary_id_color, color = "black", alpha = 0, aes(x = progression_group, y = pct), show.legend = T) +
+    geom_label(data = cell_counts2, color = cell_counts2$primary_id_color, label.size = .7, aes(label = paste0(lineage_name, "\n", scales::percent(pct))), position = "stack", vjust = c(2.1, 2.1, 2.1, 2.1, 2.1, 1.1, 2.1, 2.1, 1.3, 1.1, 1.2, 1.6, 1.0, 1.6, -0.0, -0.0), size = 4) +
+    theme_prism() +
+    ylab("Baseline Microenvironment Composition") +
+    xlab("Progression Group")
+
+
+
+PATHS <- pdf_and_png(p, output, "stacked_bar_chart", pdfWidth = 6, pdfHeight = 12)
+knitr::include_graphics(PATHS[["png"]])
+```
+
+## Option B - No Split
+
+```{r}
+md_bl <- md_ordered |> dplyr::filter(VJ_INTERVAL == "Baseline" & lineage_group != "LQ")
+
+generalCounts <- table(md_bl$public_id, md_bl[, "display_name"])
+generalProp <- (generalCounts / rowSums(generalCounts)) |> as.data.frame()
+colnames(generalProp) <- list("public_id", "display_name", "count")
+
+md_bl_subset <- md_bl |> dplyr::distinct(public_id, progression_group)
+md_name_subset <- md_bl |> dplyr::distinct(display_name, lineage_group, lineage_order, primary_id_color, color)
+
+patRatios <- dplyr::left_join(generalProp, md_bl_subset, by = "public_id")
+patRatios <- dplyr::left_join(patRatios, md_name_subset, by = "display_name")
+
+md_bl_sel <- md_ordered |> dplyr::distinct(lineage_group, display_name, lineage_order, color, primary_id_color, subcluster_V03072023)
+md_bl_sel_2 <- md_ordered |> dplyr::distinct(lineage_group, primary_id_color)
+
+patRatios$display_name <- factor(patRatios$display_name, levels = rev(unique(md_ordered$display_name)))
+patRatios$lineage_group <- factor(patRatios$lineage_group, levels = (unique(md_ordered$lineage_group)))
+patRatios <- patRatios |> na.omit(axis = 2)
+
+
+md_bl_sel <- md_ordered |> dplyr::distinct(lineage_group, display_name, lineage_order, color, primary_id_color, subcluster_V03072023)
+md_bl_sel_2 <- md_ordered |> dplyr::distinct(lineage_group, primary_id_color)
+
+cell_counts <- patRatios |>
+    group_by(display_name) |>
+    dplyr::summarise(mean = mean(count)) |>
+    mutate(pct = prop.table(mean))
+
+cell_counts2 <- patRatios |>
+    group_by(public_id, lineage_group) |>
+    dplyr::summarise(sum_lin = sum(count)) |>
+    group_by(lineage_group) |>
+    dplyr::summarise(mean_lin = mean(sum_lin)) |>
+    mutate(pct = prop.table(mean_lin))
+
+cell_counts <- cell_counts |>
+    dplyr::left_join(md_bl_sel, by = "display_name")
+
+cell_counts2 <- cell_counts2 |>
+    dplyr::left_join(md_bl_sel_2, by = "lineage_group") |>
+    dplyr::arrange(desc(lineage_group))
+cell_counts2 <- cell_counts2 |> dplyr::left_join(lineage_label, by = "lineage_group")
+
+p <- ggplot(cell_counts, aes(x = 0, y = pct)) +
+    geom_col(position = "fill", fill = cell_counts$color, color = cell_counts$color, aes(x = 0, y = pct), show.legend = F) +
+    geom_col(data = cell_counts2, position = "fill", fill = cell_counts2$primary_id_color, color = "black", alpha = 0, aes(x = 0, y = pct), show.legend = T) +
+    geom_label(data = cell_counts2, color = cell_counts2$primary_id_color, label.size = .7, aes(label = paste0(lineage_name, "\n", scales::percent(mean_lin))), position = "stack", vjust = c(2.1, 2.1, 2.1, 2.1, 1.3, 1.2, 1.0, -0.0), size = 4) +
+    theme_prism() +
+    theme(axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank()) +
+    ylab("Baseline Microenvironment Composition")
+
+stacked_no_split_paths <- pdf_and_png(p, output_F2, "stacked_bar_chart_nosplit", pdfWidth = 4, pdfHeight = 12)
+
+
+cumsum_pos <- c(0, cumsum(cell_counts2$mean_lin))
+cumsum_pos <- cumsum_pos[1:(length(cumsum_pos) - 1)]
+cumsum_pos <- cumsum_pos + 0.5 * cell_counts2$mean_lin
+
+cumsum_pos[[8]] <- cumsum_pos[[8]] + 0.02 # Manual nudge
+
+phoriz <- ggplot(cell_counts, aes(x = 0, y = pct)) +
+    geom_col(position = "fill", fill = cell_counts$color, color = cell_counts$color, aes(x = 0, y = pct), show.legend = F) +
+    geom_col(data = cell_counts2, position = "fill", fill = cell_counts2$primary_id_color, color = "black", alpha = 0, aes(x = 0, y = pct), show.legend = T) +
+    geom_label(data = cell_counts2, color = cell_counts2$primary_id_color, label.size = .7, aes(label = paste0(lineage_name, "\n", scales::percent(mean_lin))), y = cumsum_pos, size = 4) +
+    theme_prism() +
+    coord_flip() +
+    ylim(c(0, 1.0)) +
+    theme(axis.text.y = element_blank(), axis.title.y = element_blank(), axis.ticks.y = element_blank()) +
+    ylab("Baseline Microenvironment Composition")
+
+
+stacked_no_split_horiz <- pdf_and_png(phoriz, output_F2, "stacked_bar_chart_nosplit_flip", pdfWidth = 12, pdfHeight = 2)
+```
+
+## Option B - No Split, Vertical
+
+```{r}
+knitr::include_graphics(stacked_no_split_paths[["png"]])
+```
+
+## Option C - No Split, Horizontal
+
+```{r}
+knitr::include_graphics(stacked_no_split_horiz[["png"]])
+```
+
+
+# Render Legend
+
+## Test One:
+```{r}
+p <- ggplot(md_bl_sel) +
+    geom_point(aes(x = lineage_order, y = lineage_group), fill = md_bl_sel$color, shape = 22, color = md_bl_sel$color) +
+    theme_void()
+
+legend_paths <- pdf_and_png(p, output, "legend_test", pdfWidth = 1.2, pdfHeight = 12)
+
+knitr::include_graphics(legend_paths[["png"]])
+```
+
+# Legend
+```{r}
+lineage_label_legend <- lineage_label
+lineage_label_legend$lineage_name <- factor(lineage_label_legend$lineage_name, levels = lineage_label_legend$lineage_name)
+lineage_label_legend$plot_row <- c(1, 1, 1, 1, 2, 2, 2, 2, 2)
+md_bl_legend <- md_bl_sel |> dplyr::left_join(lineage_label_legend, by = "lineage_group")
+
+md_bl_legend$lineage_name <- factor(md_bl_legend$lineage_name, levels = lineage_label_legend$lineage_name) # Make sure order sticks
+md_bl_legend <- md_bl_legend |> arrange(lineage_name)
+
+md_bl_num_per_group <- md_bl_legend |>
+    group_by(lineage_name) |>
+    summarise(length = max(lineage_order))
+
+
+md_bl_legend <- md_bl_legend |> dplyr::left_join(md_bl_num_per_group)
+
+md_bl_label <- md_bl_legend |>
+    group_by(lineage_name) |>
+    summarise(center = mean(lineage_order))
+
+
+p <- ggplot(md_bl_legend, clip = "off") +
+    geom_rect(position = "dodge", aes(xmin = lineage_order - 0.45 - length / 2, xmax = lineage_order + 0.45 - length / 2, ymax = 0.45, ymin = -0.45), fill = md_bl_legend$color, color = md_bl_legend$color) +
+    theme_void() +
+    coord_fixed() +
+    facet_grid(~lineage_name, space = "free") +
+    theme(strip.text.x = element_text(size = 4)) +
+    NoLegend()
+
+paths_legend_base <- pdf_and_png(p, output, "legend_base", pdfWidth = 10, pdfHeight = 4)
+
+
+md_bl_legend_2 <- md_bl_legend |> dplyr::left_join(md_ordered |> dplyr::distinct(display_name, cellID_short), by = "display_name")
+
+p <- ggplot(md_bl_legend_2, clip = "off") +
+    geom_rect(position = "dodge", aes(xmin = lineage_order - 0.45 - length / 2, xmax = lineage_order + 0.45 - length / 2, ymax = 1, ymin = -1), fill = md_bl_legend$color, color = md_bl_legend$color) +
+    geom_text(aes(x = lineage_order - length / 2, y = -1.2, label = cellID_short), color = md_bl_legend$color, angle = 90, hjust = "right", size = 1) +
+    theme_void() +
+    ylim(-10, 1) +
+    coord_fixed() +
+    facet_grid(~lineage_name, space = "free") +
+    theme(strip.text.x = element_text(size = 4)) +
+    NoLegend()
+
+plist <- list()
+for (i in unique(md_bl_legend_2$lineage_name)) {
+    if (i == "LQ/Doublet") {
+        tmp_md <- md_bl_legend_2 |>
+            dplyr::filter(lineage_name == i) |>
+            dplyr::distinct(lineage_name, .keep_all = T)
+        tmp_md$lineage_order <- 1
+        tmp_md$lineage_name <- "Doublet"
+        tmp_md$cellID_short <- "Doublet"
+        plist[[i]] <- ggplot(tmp_md, clip = "off") +
+            geom_rect(position = "dodge", aes(xmin = lineage_order - 0.45, xmax = lineage_order + 0.45, ymax = 0, ymin = -.95), fill = tmp_md$color, color = tmp_md$color) +
+            geom_text(aes(x = lineage_order, y = -1.2, label = cellID_short), color = tmp_md$color, angle = 90, hjust = "right", size = 2.5) +
+            theme_void() +
+            ylim(-12, 0) +
+            xlim(-1, 3) +
+            coord_equal() +
+            facet_grid(~lineage_name) +
+            theme(strip.text.x = element_text(size = 8)) +
+            NoLegend() +
+            theme(strip.clip = "off")
+    } else {
+        tmp_md <- md_bl_legend_2 |> dplyr::filter(lineage_name == i)
+        plist[[i]] <- ggplot(tmp_md, clip = "off") +
+            geom_rect(position = "dodge", aes(xmin = lineage_order - 0.45, xmax = lineage_order + 0.45, ymax = 0, ymin = -.95), fill = tmp_md$color, color = tmp_md$color) +
+            geom_text(aes(x = lineage_order, y = -1.2, label = cellID_short), color = tmp_md$color, angle = 90, hjust = "right", size = 2.5) +
+            theme_void() +
+            ylim(-12, 0) +
+            coord_equal() +
+            facet_grid(~lineage_name) +
+            theme(strip.text.x = element_text(size = 8)) +
+            NoLegend() +
+            theme(strip.clip = "off")
+    }
+}
+test <- wrap_plots(plist, nrow = 1, widths = rep(NA, length(plist)))
+
+paths_legend_base_with_text <- pdf_and_png(test, output_F2, "legend_base_with_text", pdfWidth = 12, pdfHeight = 1.8)
+
+md_bl_all_labels <- md_bl_legend |> dplyr::left_join(md_ordered |> dplyr::distinct(display_name, cellID_long, cellID_short), by = "display_name")
+md_bl_all_labels <- md_bl_all_labels |> dplyr::arrange(lineage_name, lineage_order)
+md_bl_all_labels$plot_order <- 1:nrow(md_bl_all_labels)
+
+p <- ggplot(md_bl_all_labels) +
+    geom_text(x = 0, aes(y = plot_order, label = cellID_long), hjust = 0, color = md_bl_all_labels$color) +
+    theme_void() +
+    NoLegend()
+paths_all_labels <- pdf_and_png(p, output_F2, "all_labels", pdfWidth = 10, pdfHeight = 20)
+```
+
+## Base
+
+```{r}
+knitr::include_graphics(paths_legend_base[["png"]])
+```
+
+## Base with text
+
+```{r}
+knitr::include_graphics(paths_legend_base_with_text[["png"]])
+```
+
+## Colored text
+
+```{r}
+knitr::include_graphics(paths_all_labels[["png"]])
+```
+
+
+# DOT PLOTS
+
+## Fig2h - Nk 
+
+```{r}
+mkrs_nk <- list(
+    "Dim/Bright" = c("GZMB", "FCGR3A", "GZMK", "NCAM1"),
+    "Adaptive Nk" = c("KLRC2", "KLRC3", "IL32", "CD3E", "BCL11B"),
+    "Mature Nk" = c("FGFBP2", "SPON2", "PRF1", "SH2D1B", "FCER1G", "KLRF1", "KLRB1", "TBX21"),
+    "Immature Nk" = c("TCF7", "SELL", "IL7R", "KIR2DL4", "XCL1", "CMC1"),
+    "BM-Resident Nk" = c("CXCR6", "EOMES", "CD69", "CD160", "TIGIT", "IKZF3")
+)
+
+ordering_df <- data.frame(subcluster_V03072023 = rev(c(
+    "NkT.5.1",
+    "NkT.4",
+    "NkT.9.0",
+    "NkT.9.1"
+)))
+
+ordering_df <- dplyr::left_join(ordering_df, cluster_naming)
+
+idents.grouping <- list(
+    "Nk Cell" = rev(c(
+        "NK_adp",
+        "NK_CD56dim",
+        "NK_CD56bright",
+        "NK_resident"
+    ))
+)
+
+tmp <- merged |> subset(subset = (subcluster_V03072023 %in% ordering_df$subcluster_V03072023))
+tmp$cellID_short <- factor(tmp$cellID_short, levels = ordering_df$cellID_short)
+
+colors_to_plot <- tmp@meta.data |> dplyr::distinct(cellID_short, color_sub)
+rownames(colors_to_plot) <- colors_to_plot$cellID_short
+colors <- colors_to_plot$color_sub
+names(colors) <- rownames(colors_to_plot)
+
+widthBase <- 15
+heightBase <- 5
+widthScale <- 46
+heightScale <- 17
+
+modifierH <- 1.2 + 1 + 2 + (length(unlist(idents.grouping)) - 1) + (length(names(idents.grouping)) - 1) / 4
+modifierW <- 1.2 + 1 + 6 + (length(unlist(mkrs_nk)) - 1) + (length(names(mkrs_nk)) - 1) / 4
+
+plotOuts <- plotMarkers(tmp,
+    markerList = mkrs_nk,
+    plotLists = c("Dot", "Tile"),
+    group.by = "cellID_short",
+    nameMod = "nk_subset",
+    output = output_F2,
+    umapSlot = "umap",
+    DOT_SIZE_X = 1.3,
+    DOT_SIZE_Y = 1.3,
+    dotBaseHeight = 1.75,
+    dotBaseWidth = 4,
+    dotScaleWidth = 0.25,
+    dotScaleHeight = 0.25,
+    SAVE_DOT_RDS = F,
+    idents.grouping = idents.grouping,
+    CLUSTER_COLORS = colors,
+    # dotScaleHeight = 0.25
+
+    DOT_OVERRIDE_H = heightBase * modifierH / heightScale + 2,
+    DOT_OVERRIDE_W = widthBase * modifierW / widthScale
+)
+
+dotNk <- plotOuts[["Dot"]][["Plot"]]
+knitr::include_graphics(plotOuts[["Dot"]][["png"]])
+```
+
+
+## Fig2g - CD8
+```{r}
+mkrs_cd8 <- list(
+    "Naive" = c("CCR7", "TCF7", "SELL", "CD27", "CD28"),
+    "Memory" = c("TRADD", "IL7R", "TIMP1"),
+    "MAIT" = c("NCR3", "SLC4A10", "KLRB1", "ZBTB16", "RORC"),
+    "NFKB" = c("REL", "NR4A2", "TNFAIP3"),
+    "Activ." = c("CXCR3", "CD69", "CD44"),
+    "Chemokine" = c("GZMK", "GZMA", "CMC1", "XCL1", "CCL4"),
+    "HLA" = c("CD74", "HLA-DRA", "HLA-DRB1", "HLA-DPB1"),
+    "TNF" = c("TNF", "NFKB1"),
+    "Cytotoxic" = c("GZMB", "GZMH", "PRF1", "IFNG", "KLRG1"), # "GNLY",  "FGFBP2", "NKG7",
+    "ISG15" = c("ISG15", "IFI44L", "XAF1"), # "MX1", "OAS1",
+    "Adapt" = c("KLRC2", "IKZF2"), # "NCAM1"
+    "Apoptotic" = c("MALAT1", "NEAT1", "percent.mt")
+)
+
+ordering_df <- data.frame(subcluster_V03072023 = rev(c(
+    "NkT.6",
+    "NkT.1.3",
+    "NkT.3.1",
+    "NkT.13",
+    "NkT.3.2",
+    "NkT.3.0",
+    "NkT.2.1",
+    "NkT.10.0",
+    "NkT.2.4",
+    "NkT.2.3",
+    "NkT.2.0",
+    "NkT.14",
+    "NkT.5.0",
+    "NkT.5.2",
+    "NkT.11"
+)))
+
+idents.grouping <- list(
+    "CD8+ T Cell" = rev(c(
+        "CD8_Tn",
+        "CD8_Tcm",
+        "CD8_Tcm_GZMK",
+        "MAIT",
+        "CD8_Tem_NFKB",
+        "CD8_Tem",
+        "CD8_Teff_HLA",
+        "CD8_Teff_TNF",
+        "CD8_Teff",
+        "CD8_Teff_b",
+        "CD8_Teff_c",
+        "CD8_Tem_IFN",
+        "CD8_T_adp",
+        "CD8_T_adp_b",
+        "CD8_T_Apoptotic"
+    ))
+)
+
+ordering_df <- dplyr::left_join(ordering_df, cluster_naming)
+
+tmp <- merged |> subset(subset = (subcluster_V03072023 %in% ordering_df$subcluster_V03072023))
+tmp$cellID_short <- factor(tmp$cellID_short, levels = ordering_df$cellID_short)
+
+colors_to_plot <- tmp@meta.data |> dplyr::distinct(cellID_short, color_sub)
+rownames(colors_to_plot) <- colors_to_plot$cellID_short
+colors <- colors_to_plot$color_sub
+names(colors) <- rownames(colors_to_plot)
+
+
+
+modifierH <- 1.2 + 1 + 2 + (length(unlist(idents.grouping)) - 1) + (length(names(idents.grouping)) - 1) / 4
+modifierW <- 1.2 + 1 + 6 + (length(unlist(mkrs_cd8)) - 1) + (length(names(mkrs_cd8)) - 1) / 4
+
+
+plotOuts <- plotMarkers(tmp,
+    markerList = mkrs_cd8,
+    plotLists = c("Dot", "Tile"),
+    group.by = "cellID_short",
+    nameMod = "cd8_subset",
+    output = output_F2,
+    umapSlot = "umap",
+    DOT_SIZE_X = 1.3,
+    DOT_SIZE_Y = 1.3,
+    dotBaseHeight = 2,
+    dotBaseWidth = 4,
+    dotScaleWidth = 0.25,
+    dotScaleHeight = 0.25,
+    SAVE_DOT_RDS = F,
+    idents.grouping = idents.grouping,
+    CLUSTER_COLORS = colors,
+    DOT_OVERRIDE_H = heightBase * modifierH / heightScale,
+    DOT_OVERRIDE_W = widthBase * modifierW / widthScale
+    # dotScaleHeight = 0.25
+)
+
+dotCD8 <- plotOuts[["Dot"]][["Plot"]]
+
+# knitr::include_graphics(plotOuts[["Dot"]][["png"]])
+```
+
+## Fig2f - CD4 
+
+```{r}
+mkrs_cd4 <- list(
+    "Naive" = c("CCR7", "TCF7", "SELL", "CD27"), # CD28
+    "TH1" = c("STAT1", "ICOS"),
+    "CM" = c("IL7R", "LTB", "KLRB1", "ANXA1"),
+    "EM" = c("JUN", "GZMK", "TRADD"),
+    "ISG15" = c("ISG15", "IFI44L", "XAF1"), # "MX1", "OAS1",
+    "Th" = c("CXCR3", "TNF"),
+    "NFKB" = c("REL", "NR4A2", "TNFAIP3"),
+    "Other" = c("IFIT2", "CD69"),
+    "TReg" = c("FOXP3", "IL2RA", "IKZF2"),
+    "Cytotoxic" = c("GZMB", "GZMH", "PRF1", "IFNG"), # "GNLY", "FGFBP2", "NKG7",
+    "TH_LEF1" = c("MALAT1", "STAT3", "RORA", "LEF1")
+)
+
+ordering_df <- data.frame(subcluster_V03072023 = rev(c(
+    "NkT.0",
+    "NkT.12",
+    "NkT.1.0",
+    "NkT.1.1",
+    "NkT.1.2",
+    "NkT.1.4",
+    "NkT.1.5",
+    "NkT.10.1",
+    "NkT.8",
+    "NkT.2.2",
+    "NkT.7"
+)))
+
+idents.grouping <- list(
+    "CD4+ T Cell" = rev(c(
+        "CD4_Tn",
+        "CD4_Tcm_IFN",
+        "CD4_Tcm_KLRB1",
+        "CD4_Teff",
+        "CD4_Tcm_NFKBIA",
+        "CD4_Tem_IFN",
+        "CD4_Th",
+        "CD4_Teff_TNF",
+        "Treg",
+        "CD4_CTL",
+        "CD4_Th_LEF1"
+    ))
+)
+
+ordering_df <- dplyr::left_join(ordering_df, cluster_naming)
+
+tmp <- merged |> subset(subset = (subcluster_V03072023 %in% ordering_df$subcluster_V03072023))
+
+tmp$cellID_short <- factor(tmp$cellID_short, levels = ordering_df$cellID_short)
+
+colors_to_plot <- tmp@meta.data |> dplyr::distinct(cellID_short, color_sub)
+rownames(colors_to_plot) <- colors_to_plot$cellID_short
+colors <- colors_to_plot$color_sub
+names(colors) <- rownames(colors_to_plot)
+
+modifierH <- 1.2 + 1 + 2 + (length(unlist(idents.grouping)) - 1) + (length(names(idents.grouping)) - 1) / 4
+modifierW <- 1.2 + 1 + 6 + (length(unlist(mkrs_cd4)) - 1) + (length(names(mkrs_cd4)) - 1) / 4
+
+
+plotOuts <- plotMarkers(tmp,
+    markerList = mkrs_cd4,
+    plotLists = c("Dot", "Tile"),
+    group.by = "cellID_short",
+    nameMod = "cd4_subset",
+    output = output_F2,
+    umapSlot = "umap",
+    DOT_SIZE_X = 1.3,
+    DOT_SIZE_Y = 1.3,
+    dotBaseHeight = 1.5,
+    dotBaseWidth = 4,
+    dotScaleWidth = 0.25,
+    dotScaleHeight = 0.25,
+    SAVE_DOT_RDS = F,
+    idents.grouping = idents.grouping,
+    CLUSTER_COLORS = colors,
+    DOT_OVERRIDE_H = heightBase * modifierH / heightScale,
+    DOT_OVERRIDE_W = widthBase * modifierW / widthScale
+
+
+    # dotScaleHeight = 0.25
+)
+dotCD4 <- plotOuts[["Dot"]][["Plot"]]
+
+knitr::include_graphics(plotOuts[["Dot"]][["png"]])
+```
+
+
+## Supplemental Figure 10 - Exhaustion and Senesence Markers
+
+```{r}
+mkrs_exh <- list(
+    "Exhaustion" = c("PDCD1", "HAVCR2", "LAG3", "CTLA4", "TIGIT", "TOX", "CD160"),
+    "Sen ↑" = c("B3GAT1", "ZEB2", "KLRG1", "KLRK1"),
+    "Sen ↓" = c("CD27", "CD28")
+)
+
+idents.grouping <- list(
+    "CD4+ T Cell" = rev(c(
+        "CD4_Tn",
+        "CD4_Tcm_IFN",
+        "CD4_Tcm_KLRB1",
+        "CD4_Teff",
+        "CD4_Tcm_NFKBIA",
+        "CD4_Tem_IFN",
+        "CD4_Th",
+        "CD4_Teff_TNF",
+        "Treg",
+        "CD4_CTL",
+        "CD4_Th_LEF1"
+    )),
+    "CD8+ T Cell" = rev(c(
+        "CD8_Tn",
+        "CD8_Tcm",
+        "CD8_Tcm_GZMK",
+        "MAIT",
+        "CD8_Tem_NFKB",
+        "CD8_Tem",
+        "CD8_Teff_HLA",
+        "CD8_Teff_TNF",
+        "CD8_Teff",
+        "CD8_Teff_b",
+        "CD8_Teff_c",
+        "CD8_Tem_IFN",
+        "CD8_T_adp",
+        "CD8_T_adp_b",
+        "CD8_T_Apoptotic"
+    ))
+)
+
+ordering_df <- dplyr::left_join(ordering_df, cluster_naming)
+
+tmp <- merged |> subset(subset = (lineage_group %in% c("CD8", "CD4")))
+
+# tmp$cellID_short <- factor(tmp$cellID_short, levels = ordering_df$cellID_short)
+
+colors_to_plot <- tmp@meta.data |> dplyr::distinct(cellID_short, color_sub)
+rownames(colors_to_plot) <- colors_to_plot$cellID_short
+colors <- colors_to_plot$color_sub
+names(colors) <- rownames(colors_to_plot)
+
+modifierH <- 1.2 + 1 + 2 + (length(unlist(idents.grouping)) - 1) + (length(names(idents.grouping)) - 1) / 4
+modifierW <- 1.2 + 1 + 6 + (length(unlist(mkrs_cd4)) - 1) + (length(names(mkrs_cd4)) - 1) / 4
+
+
+plotOuts <- plotMarkers(tmp,
+    markerList = mkrs_exh,
+    plotLists = c("Dot", "Tile"),
+    group.by = "cellID_short",
+    nameMod = "tcell_exh",
+    output = output_F2,
+    umapSlot = "umap",
+    DOT_SIZE_X = 1.3,
+    DOT_SIZE_Y = 1.3,
+    dotBaseHeight = 1.5,
+    dotBaseWidth = 4,
+    dotScaleWidth = 0.25,
+    dotScaleHeight = 0.25,
+    SAVE_DOT_RDS = F,
+    idents.grouping = idents.grouping,
+    CLUSTER_COLORS = colors,
+    DOT_OVERRIDE_H = heightBase * modifierH / heightScale,
+    DOT_OVERRIDE_W = widthBase * modifierW / widthScale
+
+
+    # dotScaleHeight = 0.25
+)
+# dotCD4 <- plotOuts[["Dot"]][["Plot"]]
+
+knitr::include_graphics(plotOuts[["Dot"]][["png"]])
+```
+
+## BEry - Fig 2L
+
+```{r}
+mkrs_BERY <- list(
+    "HSC" = c("CD34", "AVP"),
+    "VDJ" = c("RAG1", "RAG2"),
+    "Pro-B" = c("DNTT", "IGLL1", "VPREB1", "EBF1", "PAX5"),
+    "Prolif." = c("MKI67", "TOP2A", "CENPF"),
+    "Pre-B" = c("SOX4", "CD79B", "MME", "TCL1A", "RGS2"),
+    "Naive-B" = c("MS4A1", "IL4R", "IGHD", "TNFRSF13C"),
+    "Mem-B" = c("IGHM", "CD27", "TNFRSF13B"),
+    "Platelet" = c("PF4", "PPBP"),
+    "Mast" = c("HDC", "TPSB2", "TPSAB1"),
+    "EBlast" = c("S100A6", "BLVRD", "PRDX2"),
+    "Ery" = c("FOXO3", "HBB", "HBA1", "HBD"),
+    "pDC" = c("GZMB", "IRF8", "JCHAIN")
+)
+
+idents.grouping <- list(
+    "HSC" = c(
+        "HSC"
+    ),
+    "B-Cell" = rev(c(
+        "B_pro",
+        "B_preLg",
+        "B_preSm",
+        "B_imm",
+        "B_trns",
+        "B_naive",
+        "B_Unswitched_mem",
+        "B_mem"
+    )),
+    "Erythroid" = rev(c(
+        "MegaK",
+        "MastC",
+        "EB",
+        "EB_MKi67_1",
+        "EB_MKi67_2"
+    )),
+    "pDC" = c("pDCs_a")
+)
+
+tmp <- merged |> subset(subset = (subcluster_V03072023_compartment == "BEry" & lineage_group != "LQ"))
+
+
+colors_to_plot <- tmp@meta.data |> dplyr::distinct(cellID_short, color_sub)
+rownames(colors_to_plot) <- colors_to_plot$cellID_short
+colors <- colors_to_plot$color_sub
+names(colors) <- rownames(colors_to_plot)
+
+modifierH <- 1.2 + 1 + 2 + (length(unlist(idents.grouping)) - 1) + (length(names(idents.grouping)) - 1) / 4
+modifierW <- 1.2 + 1 + 6 + (length(unlist(mkrs_BERY)) - 1) + (length(names(mkrs_BERY)) - 1) / 4
+
+plotOuts <- plotMarkers(tmp,
+    markerList = mkrs_BERY,
+    plotLists = c("Dot", "Tile"),
+    group.by = "cellID_short",
+    nameMod = "bery",
+    output = output_F2,
+    umapSlot = "umap",
+    DOT_SIZE_X = 1.3,
+    DOT_SIZE_Y = 1.3,
+    dotBaseHeight = 3,
+    dotBaseWidth = 4.2,
+    dotScaleWidth = 0.25,
+    dotScaleHeight = 0.25,
+    SAVE_DOT_RDS = F,
+    # dotScaleHeight = 0.25,
+    idents.grouping = idents.grouping,
+    CLUSTER_COLORS = colors,
+    DOT_OVERRIDE_H = heightBase * modifierH / heightScale,
+    DOT_OVERRIDE_W = widthBase * modifierW / widthScale
+)
+dotBEry <- plotOuts[["Dot"]][["Plot"]]
+
+
+knitr::include_graphics(plotOuts[["Dot"]][["png"]])
+```
+
+## Myeloid - Figure 2J
+
+```{r}
+mkrs_Myeloid <- list(
+    "Classic Mono" = c("CD14", "S100A8", "S100A12", "TSPO", "LGALS2", "CTSS"),
+    "Hypox" = c("HIF1A", "MAP3K8"),
+    "ISG15" = c("ISG15", "IFI44L", "IFI6"),
+    "Inflam" = c("IL1B", "CCL4", "CCL3"),
+    "Other" = c("FKBP5", "IL1R2"),
+    "M2" = c("MRC1", "CD163"),
+    "CD16+ nCM" = c("LST1", "FCGR3A", "CX3CR1", "PECAM1"),
+    "Prolif." = c("MKI67", "TOP2A", "STMN1"),
+    "Neutrophil" = c("MPO", "AZU1", "ELANE", "SRGN", "ENO1"),
+    "MDSC" = c("ARG1", "CEACAM8", "ITGAM", "FUT4"),
+    "cDC1" = c("CLEC9A", "BATF3"),
+    "cDC2" = c("FCER1A", "CD1C", "CLEC10A", "ENHO"),
+    "pDC" = c("LAMP3", "FSCN1")
+)
+
+idents.grouping <- list(
+    "CD14 Mono+Macro" = rev(c(
+        "CD14+Mono_S100A",
+        "CD14+Mono_CTSS",
+        "CD14+Mono_hypo",
+        "CD14+Mono_IFN",
+        "CD14+Mono_pro-inflam",
+        "Macro/Mono",
+        "M2_Macro"
+    )),
+    "nCM" = rev(c(
+        "CD16+Mono"
+    )),
+    "Early" = rev(c("GMP", "Neutrophil_RPS/RPL", "Granulocyte")),
+    "Other" = rev(c("Neutrohpil_ARG1", "cDC1", "cDC2", "pDCs_b"))
+)
+
+tmp <- merged |> subset(subset = (subcluster_V03072023_compartment == "Myeloid" & lineage_group != "LQ"))
+
+colors_to_plot <- tmp@meta.data |> dplyr::distinct(cellID_short, color_sub)
+rownames(colors_to_plot) <- colors_to_plot$cellID_short
+colors <- colors_to_plot$color_sub
+names(colors) <- rownames(colors_to_plot)
+
+modifierH <- 1.2 + 1 + 2 + (length(unlist(idents.grouping)) - 1) + (length(names(idents.grouping)) - 1) / 4
+modifierW <- 1.2 + 1 + 6 + (length(unlist(mkrs_Myeloid)) - 1) + (length(names(mkrs_Myeloid)) - 1) / 4
+
+plotOuts <- plotMarkers(tmp,
+    markerList = mkrs_Myeloid,
+    plotLists = c("Dot", "Tile"),
+    group.by = "cellID_short",
+    nameMod = "myeloid",
+    output = output_F2,
+    umapSlot = "umap",
+    DOT_SIZE_X = 1.3,
+    DOT_SIZE_Y = 1.3,
+    dotBaseHeight = 3,
+    dotBaseWidth = 4.2,
+    dotScaleWidth = 0.25,
+    dotScaleHeight = 0.25,
+    # dotScaleHeight = 0.25,
+    idents.grouping = idents.grouping,
+    SAVE_DOT_RDS = F,
+    CLUSTER_COLORS = colors,
+    DOT_OVERRIDE_H = heightBase * modifierH / heightScale,
+    DOT_OVERRIDE_W = widthBase * modifierW / widthScale
+)
+
+dotMyeloid <- plotOuts[["Dot"]][["Plot"]]
+
+knitr::include_graphics(plotOuts[["Dot"]][["png"]])
+```
+
+```{r}
+# test <- patchwork::wrap_plots(dotCD4, dotCD8, dotNk, dotMyeloid, dotBEry, ncol = 1, widths = c(NA, NA, NA, NA, NA), heights = c(NA, NA, NA, NA, NA))
+# test <- patchwork::wrap_plots(dotCD4, dotCD8, dotNk, dotMyeloid, dotBEry, nrow = 1, widths = c(NA, NA, NA, NA, NA), heights = c(NA, NA, NA, NA, NA))
+
+# test_b <- dotCD4 / dotCD8 / dotNk / dotMyeloid / dotBEry + plot_layout(ncol = 1, widths = c(NA, NA, NA, NA, NA), heights = c(NA, NA, NA, NA, NA))
+
+# test_c <- cowplot::plot_grid(plotlist = p_all_cowplot, rel_widths = c(3, 7), ncol = 2, align = "v", axis = "l")
+```
+
+# OTHER UMAPS
+
+## NkT - Fig 2D
+
+```{r}
+mergedUMAP <- merged[["umap.sub"]]@cell.embeddings |> as.data.frame()
+mergedUMAP$cellname <- rownames(mergedUMAP)
+md_all <- md
+md_all <- dplyr::left_join(md_all, mergedUMAP, by = "cellname")
+# md_all <- dplyr::left_join(md_all, color_df, by = "display_name")
+# md_all <- dplyr::left_join(md_all, color_primary_df, by = "lineage_group")
+# md$cellID_general <- factor(md$cellID_general, levels = c(
+#     "T Lymphoid",
+#     "Nk",
+#     "B Lymphoid",
+#     "Myeloid",
+#     "Erythroid",
+#     "Plasma",
+#     "HSC",
+#     "pDC",
+#     "Fibroblast"
+# ))
+
+md_ordered <- md_all |> dplyr::filter(subcluster_V03072023_compartment == "NkT")
+md_ordered <- md_ordered |> arrange(desc(lineage_group), desc(lineage_order))
+
+md_grouping_centers <- md_ordered |>
+    dplyr::group_by(cellID_short) |>
+    summarise(UMAPSUB_1 = mean(UMAPSUB_1), UMAPSUB_2 = mean(UMAPSUB_2)) |>
+    dplyr::left_join(md_ordered |> dplyr::distinct(cellID_short, lineage_group, color, color_sub),
+        by = "cellID_short"
+    ) |>
+    dplyr::filter(lineage_group != "LQ")
+
+
+colorList <-
+    colorRampPalette(paletteer_d("pals::alphabet2"))(length(md_grouping_centers$color))
+
+md_grouping_centers$color_override <- colorList
+
+allColors_rgb <- list()
+L_list <- c()
+idx <- 1
+for (i in md_grouping_centers$color_override) {
+    allColors_rgb[[idx]] <- as.vector(col2rgb(i))
+
+    L <- (allColors_rgb[[idx]][[1]]**2 + 1.4 * allColors_rgb[[idx]][[2]]**2 + 1.1 * allColors_rgb[[idx]][[3]]**2)**(1 / 2)
+    L <- L / ((3.5 * 255**2)**(1 / 2))
+    L_list[idx] <- L
+    idx <- idx + 1
+}
+
+md_grouping_centers$luminescence <- L_list
+md_grouping_centers <- md_grouping_centers |> dplyr::mutate(text_color = dplyr::case_when(
+    luminescence > 0.63 ~ "black",
+    luminescence <= 0.63 ~ "white"
+))
+
+md_ordered <- dplyr::left_join(md_ordered, md_grouping_centers |> dplyr::select(cellID_short, color_sub, color_override))
+
+
+idx_LQ <- which(md_ordered$lineage_group == "LQ")
+md_ordered[idx_LQ, "color_override"] <- md_ordered[idx_LQ, "color"]
+
+
+
+p <- md_ordered |>
+    ggplot(aes(x = UMAPSUB_1, y = UMAPSUB_2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = md_ordered$color_sub, colour = md_ordered$color_sub)) +
+    NoLegend() +
+    theme_prism()
+
+p_label <- p + geom_label_repel(data = md_grouping_centers, label.size = 1, colour = "white", size = 6, fill = md_grouping_centers$color_sub, aes(label = cellID_short))
+
+
+
+
+p_label <- p_label +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p_label <- p_label + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+with_label <- pdf_and_png(p_label, output_F2, "nkt_umap_custom_colors", pdfWidth = 10, pdfHeight = 10)
+
+p <- p +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p <- p + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+
+no_label <- pdf_and_png(p, output_F2, "nkt_umap_custom_colors_nolabel", pdfWidth = 10, pdfHeight = 10)
+```
+
+## NkT Feature Plots - Fig 2E
+
+```{r}
+nkt <- subset(merged, subset = (subcluster_V03072023_compartment == "NkT"))
+
+fp <- list()
+
+featlist <- c("CD3D", "CD8A", "CD4", "NCR1")
+
+for (feat in featlist) {
+    fp[[feat]] <- FeaturePlot(nkt, features = feat, min.cutoff = 0, max.cutoff = 3, reduction = "umap.sub", order = T) + theme_prism() + NoAxes()
+    # if (feat != "HBB") {
+    #     fp[[feat]] <- fp[[feat]] + NoLegend()
+    # }
+}
+
+p <- patchwork::wrap_plots(fp, nrow = 1, guides = "collect")
+
+PATHS <- pdf_and_png(p, output_F2, filename = "test_nkt_featplot", pdfWidth = 10, pdfHeight = 2.7)
+
+knitr::include_graphics(PATHS[["png"]])
+```
+
+### With Label
+
+```{r}
+knitr::include_graphics(with_label[["png"]])
+```
+
+### Without Label
+
+```{r}
+knitr::include_graphics(no_label[["png"]])
+```
+
+## BEry UMAP - Fig 2K
+
+```{r}
+mergedUMAP <- merged[["umap.sub"]]@cell.embeddings |> as.data.frame()
+mergedUMAP$cellname <- rownames(mergedUMAP)
+md_all <- md
+md_all <- dplyr::left_join(md_all, mergedUMAP, by = "cellname")
+# md_all <- dplyr::left_join(md_all, color_df, by = "display_name")
+# md_all <- dplyr::left_join(md_all, color_primary_df, by = "lineage_group")
+# md$cellID_general <- factor(md$cellID_general, levels = c(
+#     "T Lymphoid",
+#     "Nk",
+#     "B Lymphoid",
+#     "Myeloid",
+#     "Erythroid",
+#     "Plasma",
+#     "HSC",
+#     "pDC",
+#     "Fibroblast"
+# ))
+
+md_ordered <- md_all |> dplyr::filter(subcluster_V03072023_compartment == "BEry")
+md_ordered <- md_ordered |> arrange(desc(lineage_group), desc(lineage_order))
+
+md_grouping_centers <- md_ordered |>
+    dplyr::group_by(cellID_short) |>
+    summarise(UMAPSUB_1 = mean(UMAPSUB_1), UMAPSUB_2 = mean(UMAPSUB_2)) |>
+    dplyr::left_join(md_ordered |> dplyr::distinct(cellID_short, lineage_group, color, color_sub),
+        by = "cellID_short"
+    ) |>
+    dplyr::filter(lineage_group != "LQ")
+
+# paletteer_d("ggsci::grey_material")
+# color_list_expanded[[i]] <- colorRampPalette(color_list_base[[i]][3:8])(color_counts[[i]])
+colorList <-
+    colorRampPalette(paletteer_d("pals::alphabet2"))(length(md_grouping_centers$color))
+
+
+
+md_grouping_centers$color_override <- colorList
+
+allColors_rgb <- list()
+L_list <- c()
+idx <- 1
+for (i in md_grouping_centers$color_override) {
+    allColors_rgb[[idx]] <- as.vector(col2rgb(i))
+
+    L <- (allColors_rgb[[idx]][[1]]**2 + 1.4 * allColors_rgb[[idx]][[2]]**2 + 1.1 * allColors_rgb[[idx]][[3]]**2)**(1 / 2)
+    L <- L / ((3.5 * 255**2)**(1 / 2))
+    L_list[idx] <- L
+    idx <- idx + 1
+}
+
+md_grouping_centers$luminescence <- L_list
+md_grouping_centers <- md_grouping_centers |> dplyr::mutate(text_color = dplyr::case_when(
+    luminescence > 0.63 ~ "black",
+    luminescence <= 0.63 ~ "white"
+))
+
+
+md_ordered <- dplyr::left_join(md_ordered, md_grouping_centers |> dplyr::select(cellID_short, color_sub, color_override))
+
+
+idx_LQ <- which(md_ordered$lineage_group == "LQ")
+md_ordered[idx_LQ, "color_override"] <- md_ordered[idx_LQ, "color"]
+
+
+p <- md_ordered |>
+    ggplot(aes(x = UMAPSUB_1, y = UMAPSUB_2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = md_ordered$color_sub, colour = md_ordered$color_sub)) +
+    NoLegend() +
+    theme_prism()
+
+p_label <- p + geom_label_repel(data = md_grouping_centers, label.size = 1, colour = "white", size = 6, fill = md_grouping_centers$color_sub, aes(label = cellID_short))
+
+
+p_label <- p_label +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p_label <- p_label + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+with_label <- pdf_and_png(p_label, output_F2, "BERY_umap_custom_colors", pdfWidth = 10, pdfHeight = 10)
+
+p <- p +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p <- p + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+
+no_label <- pdf_and_png(p, output_F2, "BERY_umap_custom_colors_nolabel", pdfWidth = 10, pdfHeight = 10)
+```
+
+### With Label
+
+```{r}
+knitr::include_graphics(with_label[["png"]])
+```
+
+### Without Label
+
+```{r}
+knitr::include_graphics(no_label[["png"]])
+```
+
+
+
+# Myeloid UMAP - Figure 2I
+
+```{r}
+mergedUMAP <- merged[["umap.sub"]]@cell.embeddings |> as.data.frame()
+mergedUMAP$cellname <- rownames(mergedUMAP)
+md_all <- md
+md_all <- dplyr::left_join(md_all, mergedUMAP, by = "cellname")
+# md_all <- dplyr::left_join(md_all, color_df, by = "display_name")
+# md_all <- dplyr::left_join(md_all, color_primary_df, by = "lineage_group")
+# md$cellID_general <- factor(md$cellID_general, levels = c(
+#     "T Lymphoid",
+#     "Nk",
+#     "B Lymphoid",
+#     "Myeloid",
+#     "Erythroid",
+#     "Plasma",
+#     "HSC",
+#     "pDC",
+#     "Fibroblast"
+# ))
+
+md_ordered <- md_all |> dplyr::filter(subcluster_V03072023_compartment == "Myeloid")
+md_ordered <- md_ordered |> arrange(desc(lineage_group), desc(lineage_order))
+
+md_grouping_centers <- md_ordered |>
+    dplyr::group_by(cellID_short) |>
+    summarise(UMAPSUB_1 = mean(UMAPSUB_1), UMAPSUB_2 = mean(UMAPSUB_2)) |>
+    dplyr::left_join(md_ordered |> dplyr::distinct(cellID_short, lineage_group, color, color_sub),
+        by = "cellID_short"
+    ) |>
+    dplyr::filter(lineage_group != "LQ")
+
+colorList <-
+    colorRampPalette(paletteer_d("pals::alphabet2"))(length(md_grouping_centers$color))
+
+
+
+md_grouping_centers$color_override <- colorList
+
+allColors_rgb <- list()
+L_list <- c()
+idx <- 1
+for (i in md_grouping_centers$color_override) {
+    allColors_rgb[[idx]] <- as.vector(col2rgb(i))
+
+    L <- (allColors_rgb[[idx]][[1]]**2 + 1.4 * allColors_rgb[[idx]][[2]]**2 + 1.1 * allColors_rgb[[idx]][[3]]**2)**(1 / 2)
+    L <- L / ((3.5 * 255**2)**(1 / 2))
+    L_list[idx] <- L
+    idx <- idx + 1
+}
+
+md_grouping_centers$luminescence <- L_list
+md_grouping_centers <- md_grouping_centers |> dplyr::mutate(text_color = dplyr::case_when(
+    luminescence > 0.63 ~ "black",
+    luminescence <= 0.63 ~ "white"
+))
+
+
+md_ordered <- dplyr::left_join(md_ordered, md_grouping_centers |> dplyr::select(cellID_short, color_sub, color_override))
+
+
+idx_LQ <- which(md_ordered$lineage_group == "LQ")
+md_ordered[idx_LQ, "color_override"] <- md_ordered[idx_LQ, "color"]
+
+
+p <- md_ordered |>
+    ggplot(aes(x = UMAPSUB_1, y = UMAPSUB_2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = md_ordered$color_sub, colour = md_ordered$color_sub)) +
+    NoLegend() +
+    theme_prism()
+
+p_label <- p + geom_label_repel(data = md_grouping_centers, label.size = 1, colour = md_grouping_centers$text_color, size = 6, fill = md_grouping_centers$color_sub, aes(label = cellID_short))
+
+
+p_label <- p_label +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p_label <- p_label + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+with_label <- pdf_and_png(p_label, output_F2, "Myeloid_umap_custom_colors", pdfWidth = 10, pdfHeight = 10)
+
+p <- p +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p <- p + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+
+no_label <- pdf_and_png(p, output_F2, "Myeloid_umap_custom_colors_nolabel", pdfWidth = 10, pdfHeight = 10)
+```
+
+### With Label
+
+```{r}
+knitr::include_graphics(with_label[["png"]])
+```
+
+### Without Label
+
+```{r}
+knitr::include_graphics(no_label[["png"]])
+```
+
+
+# Erythrocyte UMAP - Supplemental Figure 2c
+
+```{r}
+mergedUMAP <- merged[["umap.sub"]]@cell.embeddings |> as.data.frame()
+mergedUMAP$cellname <- rownames(mergedUMAP)
+md_all <- md
+md_all <- dplyr::left_join(md_all, mergedUMAP, by = "cellname")
+# md_all <- dplyr::left_join(md_all, color_df, by = "display_name")
+# md_all <- dplyr::left_join(md_all, color_primary_df, by = "lineage_group")
+# md$cellID_general <- factor(md$cellID_general, levels = c(
+#     "T Lymphoid",
+#     "Nk",
+#     "B Lymphoid",
+#     "Myeloid",
+#     "Erythroid",
+#     "Plasma",
+#     "HSC",
+#     "pDC",
+#     "Fibroblast"
+# ))
+
+md_ordered <- md_all |> dplyr::filter(subcluster_V03072023_compartment == "Ery")
+md_ordered <- md_ordered |> arrange(desc(lineage_group), desc(lineage_order))
+
+md_grouping_centers <- md_ordered |>
+    dplyr::group_by(cellID_short) |>
+    summarise(UMAPSUB_1 = mean(UMAPSUB_1), UMAPSUB_2 = mean(UMAPSUB_2)) |>
+    dplyr::left_join(md_ordered |> dplyr::distinct(cellID_short, lineage_group, color, color_sub),
+        by = "cellID_short"
+    ) |>
+    dplyr::filter(lineage_group != "LQ")
+
+colorList <-
+    colorRampPalette(paletteer_d("pals::alphabet2"))(length(md_grouping_centers$color))
+
+
+
+md_grouping_centers$color_override <- colorList
+
+allColors_rgb <- list()
+L_list <- c()
+idx <- 1
+for (i in md_grouping_centers$color_override) {
+    allColors_rgb[[idx]] <- as.vector(col2rgb(i))
+
+    L <- (allColors_rgb[[idx]][[1]]**2 + 1.4 * allColors_rgb[[idx]][[2]]**2 + 1.1 * allColors_rgb[[idx]][[3]]**2)**(1 / 2)
+    L <- L / ((3.5 * 255**2)**(1 / 2))
+    L_list[idx] <- L
+    idx <- idx + 1
+}
+
+md_grouping_centers$luminescence <- L_list
+md_grouping_centers <- md_grouping_centers |> dplyr::mutate(text_color = dplyr::case_when(
+    luminescence > 0.63 ~ "black",
+    luminescence <= 0.63 ~ "white"
+))
+
+
+md_ordered <- dplyr::left_join(md_ordered, md_grouping_centers |> dplyr::select(cellID_short, color_sub, color_override))
+
+
+idx_LQ <- which(md_ordered$lineage_group == "LQ")
+md_ordered[idx_LQ, "color_override"] <- md_ordered[idx_LQ, "color"]
+
+
+p <- md_ordered |>
+    ggplot(aes(x = UMAPSUB_1, y = UMAPSUB_2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = md_ordered$color_sub, colour = md_ordered$color_sub)) +
+    NoLegend() +
+    theme_prism()
+
+p_label <- p + geom_label_repel(data = md_grouping_centers, label.size = 1, colour = md_grouping_centers$text_color, size = 6, fill = md_grouping_centers$color_sub, aes(label = cellID_short))
+
+
+p_label <- p_label +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p_label <- p_label + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+with_label <- pdf_and_png(p_label, output_F2, "EryCyte_umap_custom_colors", pdfWidth = 10, pdfHeight = 10)
+
+p <- p +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p <- p + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+
+no_label <- pdf_and_png(p, output_F2, "EryCyte_umap_custom_colors_nolabel", pdfWidth = 10, pdfHeight = 10)
+```
+
+### With Label
+
+```{r}
+knitr::include_graphics(with_label[["png"]])
+```
+
+### Without Label
+
+```{r}
+knitr::include_graphics(no_label[["png"]])
+```
+
+
+# Plasma UMAP - Supplemental Figure 2D
+```{r}
+mergedUMAP <- merged[["umap.sub"]]@cell.embeddings |> as.data.frame()
+mergedUMAP$cellname <- rownames(mergedUMAP)
+md_all <- md
+md_all <- dplyr::left_join(md_all, mergedUMAP, by = "cellname")
+# md_all <- dplyr::left_join(md_all, color_df, by = "display_name")
+# md_all <- dplyr::left_join(md_all, color_primary_df, by = "lineage_group")
+# md$cellID_general <- factor(md$cellID_general, levels = c(
+#     "T Lymphoid",
+#     "Nk",
+#     "B Lymphoid",
+#     "Myeloid",
+#     "Erythroid",
+#     "Plasma",
+#     "HSC",
+#     "pDC",
+#     "Fibroblast"
+# ))
+
+md_ordered <- md_all |> dplyr::filter(subcluster_V03072023_compartment == "Plasma")
+md_ordered <- md_ordered |> arrange(desc(lineage_group), desc(lineage_order))
+
+md_grouping_centers <- md_ordered |>
+    dplyr::group_by(cellID_short) |>
+    summarise(UMAPSUB_1 = mean(UMAPSUB_1), UMAPSUB_2 = mean(UMAPSUB_2)) |>
+    dplyr::left_join(md_ordered |> dplyr::distinct(cellID_short, lineage_group, color, color_sub),
+        by = "cellID_short"
+    ) |>
+    dplyr::filter(lineage_group != "LQ")
+
+colorList <-
+    colorRampPalette(paletteer_d("pals::alphabet2"))(length(md_grouping_centers$color))
+
+
+
+md_grouping_centers$color_override <- colorList
+
+allColors_rgb <- list()
+L_list <- c()
+idx <- 1
+for (i in md_grouping_centers$color_override) {
+    allColors_rgb[[idx]] <- as.vector(col2rgb(i))
+
+    L <- (allColors_rgb[[idx]][[1]]**2 + 1.4 * allColors_rgb[[idx]][[2]]**2 + 1.1 * allColors_rgb[[idx]][[3]]**2)**(1 / 2)
+    L <- L / ((3.5 * 255**2)**(1 / 2))
+    L_list[idx] <- L
+    idx <- idx + 1
+}
+
+md_grouping_centers$luminescence <- L_list
+md_grouping_centers <- md_grouping_centers |> dplyr::mutate(text_color = dplyr::case_when(
+    luminescence > 0.63 ~ "black",
+    luminescence <= 0.63 ~ "white"
+))
+
+
+md_ordered <- dplyr::left_join(md_ordered, md_grouping_centers |> dplyr::select(cellID_short, color_sub, color_override))
+
+
+idx_LQ <- which(md_ordered$lineage_group == "LQ")
+md_ordered[idx_LQ, "color_override"] <- md_ordered[idx_LQ, "color"]
+
+
+p <- md_ordered |>
+    ggplot(aes(x = UMAPSUB_1, y = UMAPSUB_2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = md_ordered$color_sub, colour = md_ordered$color_sub)) +
+    NoLegend() +
+    theme_prism()
+
+p_label <- p + geom_label_repel(data = md_grouping_centers, label.size = 1, colour = md_grouping_centers$text_color, size = 6, fill = md_grouping_centers$color_sub, aes(label = cellID_short))
+
+
+p_label <- p_label +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p_label <- p_label + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+with_label <- pdf_and_png(p_label, output_F2, "Plasma_umap_custom_colors", pdfWidth = 10, pdfHeight = 10)
+
+p <- p +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p <- p + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+
+no_label <- pdf_and_png(p, output_F2, "Plasma_umap_custom_colors_nolabel", pdfWidth = 10, pdfHeight = 10)
+```
+
+### With Label
+
+```{r}
+knitr::include_graphics(with_label[["png"]])
+```
+
+### Without Label
+
+```{r}
+knitr::include_graphics(no_label[["png"]])
+```
+
+# CD8 UMAP - Supplemental Figure 2B
+```{r}
+path_rds_cd8 <- "/opt/pmedseq-data/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/output/monocle3_cd8_LQ_included/cd8_all_pcs_NEWMD_25/cd8_all_pcs_NEWMD_25.rds"
+
+cd8 <- readRDS(path_rds_cd8)
+```
+
+```{r}
+mergedUMAP <- cd8[["umapsub"]]@cell.embeddings |> as.data.frame()
+colnames(mergedUMAP) <- c("UMAPSUB_1", "UMAPSUB_2")
+mergedUMAP$cellname <- rownames(mergedUMAP)
+md_all <- md
+md_all <- dplyr::left_join(mergedUMAP, md_all, by = "cellname")
+# md_all <- dplyr::left_join(md_all, color_df, by = "display_name")
+# md_all <- dplyr::left_join(md_all, color_primary_df, by = "lineage_group")
+# md$cellID_general <- factor(md$cellID_general, levels = c(
+#     "T Lymphoid",
+#     "Nk",
+#     "B Lymphoid",
+#     "Myeloid",
+#     "Erythroid",
+#     "Plasma",
+#     "HSC",
+#     "pDC",
+#     "Fibroblast"
+# ))
+
+md_ordered <- md_all #|> dplyr::filter(subcluster_V03072023_compartment == "Plasma")
+md_ordered <- md_ordered |> arrange(desc(lineage_group), desc(lineage_order))
+
+md_grouping_centers <- md_ordered |>
+    dplyr::group_by(cellID_short) |>
+    summarise(UMAPSUB_1 = mean(UMAPSUB_1), UMAPSUB_2 = mean(UMAPSUB_2)) |>
+    dplyr::left_join(md_ordered |> dplyr::distinct(cellID_short, lineage_group, color, color_sub),
+        by = "cellID_short"
+    ) |>
+    dplyr::filter(lineage_group != "LQ")
+
+colorList <-
+    colorRampPalette(paletteer_d("pals::alphabet2"))(length(md_grouping_centers$color))
+
+
+
+md_grouping_centers$color_override <- colorList
+
+allColors_rgb <- list()
+L_list <- c()
+idx <- 1
+for (i in md_grouping_centers$color_override) {
+    allColors_rgb[[idx]] <- as.vector(col2rgb(i))
+
+    L <- (allColors_rgb[[idx]][[1]]**2 + 1.4 * allColors_rgb[[idx]][[2]]**2 + 1.1 * allColors_rgb[[idx]][[3]]**2)**(1 / 2)
+    L <- L / ((3.5 * 255**2)**(1 / 2))
+    L_list[idx] <- L
+    idx <- idx + 1
+}
+
+md_grouping_centers$luminescence <- L_list
+md_grouping_centers <- md_grouping_centers |> dplyr::mutate(text_color = dplyr::case_when(
+    luminescence > 0.63 ~ "black",
+    luminescence <= 0.63 ~ "white"
+))
+
+
+md_ordered <- dplyr::left_join(md_ordered, md_grouping_centers |> dplyr::select(cellID_short, color_sub, color_override))
+
+
+idx_LQ <- which(md_ordered$lineage_group == "LQ")
+md_ordered[idx_LQ, "color_override"] <- md_ordered[idx_LQ, "color"]
+
+
+p <- md_ordered |>
+    ggplot(aes(x = UMAPSUB_1, y = UMAPSUB_2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = md_ordered$color_sub, colour = md_ordered$color_sub)) +
+    NoLegend() +
+    theme_prism()
+
+p_label <- p + geom_label_repel(data = md_grouping_centers, label.size = 1, colour = md_grouping_centers$text_color, size = 6, fill = md_grouping_centers$color_sub, aes(label = cellID_short))
+
+
+p_label <- p_label +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p_label <- p_label + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+with_label <- pdf_and_png(p_label, output_F2, "cd8_umap_custom_colors", pdfWidth = 10, pdfHeight = 10)
+
+p <- p +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p <- p + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+
+no_label <- pdf_and_png(p, output_F2, "cd8_umap_custom_colors_nolabel", pdfWidth = 10, pdfHeight = 10)
+```
+
+### With Label
+
+```{r}
+knitr::include_graphics(with_label[["png"]])
+```
+
+### Without Label
+
+```{r}
+knitr::include_graphics(no_label[["png"]])
+```
+
+# CD4 UMAP, Supplemental Figure 2A
+
+```{r}
+path_rds_cd4 <- "/opt/megaseq-data/wcpilch/MMRF-ImmuneAtlas-Analysis-Sync/output/monocle3_cd4_102023/cd4_with7_all_pcs_11282330/cd4_with7_all_pcs_11282330.rds"
+cd4 <- readRDS(path_rds_cd4)
+```
+
+```{r}
+mergedUMAP <- cd4[["umapsub"]]@cell.embeddings |> as.data.frame()
+colnames(mergedUMAP) <- c("UMAPSUB_1", "UMAPSUB_2")
+
+mergedUMAP$cellname <- rownames(mergedUMAP)
+md_all <- md
+md_all <- dplyr::left_join(mergedUMAP, md_all, by = "cellname")
+# md_all <- dplyr::left_join(md_all, color_df, by = "display_name")
+# md_all <- dplyr::left_join(md_all, color_primary_df, by = "lineage_group")
+# md$cellID_general <- factor(md$cellID_general, levels = c(
+#     "T Lymphoid",
+#     "Nk",
+#     "B Lymphoid",
+#     "Myeloid",
+#     "Erythroid",
+#     "Plasma",
+#     "HSC",
+#     "pDC",
+#     "Fibroblast"
+# ))
+
+md_ordered <- md_all #|> dplyr::filter(subcluster_V03072023_compartment == "Plasma")
+md_ordered <- md_ordered |> arrange(desc(lineage_group), desc(lineage_order))
+
+md_grouping_centers <- md_ordered |>
+    dplyr::group_by(cellID_short) |>
+    summarise(UMAPSUB_1 = mean(UMAPSUB_1), UMAPSUB_2 = mean(UMAPSUB_2)) |>
+    dplyr::left_join(md_ordered |> dplyr::distinct(cellID_short, lineage_group, color, color_sub),
+        by = "cellID_short"
+    ) |>
+    dplyr::filter(lineage_group != "LQ")
+
+colorList <-
+    colorRampPalette(paletteer_d("pals::alphabet2"))(length(md_grouping_centers$color))
+
+
+
+md_grouping_centers$color_override <- colorList
+
+allColors_rgb <- list()
+L_list <- c()
+idx <- 1
+for (i in md_grouping_centers$color_override) {
+    allColors_rgb[[idx]] <- as.vector(col2rgb(i))
+
+    L <- (allColors_rgb[[idx]][[1]]**2 + 1.4 * allColors_rgb[[idx]][[2]]**2 + 1.1 * allColors_rgb[[idx]][[3]]**2)**(1 / 2)
+    L <- L / ((3.5 * 255**2)**(1 / 2))
+    L_list[idx] <- L
+    idx <- idx + 1
+}
+
+md_grouping_centers$luminescence <- L_list
+md_grouping_centers <- md_grouping_centers |> dplyr::mutate(text_color = dplyr::case_when(
+    luminescence > 0.63 ~ "black",
+    luminescence <= 0.63 ~ "white"
+))
+
+
+md_ordered <- dplyr::left_join(md_ordered, md_grouping_centers |> dplyr::select(cellID_short, color_sub, color_override))
+
+
+idx_LQ <- which(md_ordered$lineage_group == "LQ")
+md_ordered[idx_LQ, "color_override"] <- md_ordered[idx_LQ, "color"]
+
+
+p <- md_ordered |>
+    ggplot(aes(x = UMAPSUB_1, y = UMAPSUB_2)) +
+    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = md_ordered$color_sub, colour = md_ordered$color_sub)) +
+    NoLegend() +
+    theme_prism()
+
+p_label <- p + geom_label_repel(data = md_grouping_centers, label.size = 1, colour = md_grouping_centers$text_color, size = 6, fill = md_grouping_centers$color_sub, aes(label = cellID_short))
+
+
+p_label <- p_label +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p_label <- p_label + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+with_label <- pdf_and_png(p_label, output_F2, "cd4_umap_custom_colors", pdfWidth = 10, pdfHeight = 10)
+
+p <- p +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0))
+
+p <- p + theme(
+    axis.line = element_blank(), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.ticks = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(), legend.position = "none",
+    panel.background = element_blank(), panel.border = element_blank(), panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(), plot.background = element_blank()
+)
+
+
+no_label <- pdf_and_png(p, output_F2, "cd4_umap_custom_colors_nolabel", pdfWidth = 10, pdfHeight = 10)
+```
+
+### With Label
+
+```{r}
+knitr::include_graphics(with_label[["png"]])
+```
+
+### Without Label
+
+```{r}
+knitr::include_graphics(no_label[["png"]])
+```
+
+# Plasma and Ery Markers - Supplemental Figure 2C and 2D
+```{r}
+plasma <- merged |> subset(subset = (lineage_group == "P"))
+
+plasma_lineage <- plasma@meta.data |> dplyr::distinct(cellID_short, lineage_order)
+plasma_lineage <- plasma_lineage |> arrange(lineage_order)
+plasma$cellID_short <- factor(plasma$cellID_short, levels = plasma_lineage$cellID_short)
+
+Idents(plasma) <- "cellID_short"
+markers_and_heatmap(plasma, FORCE_OVERWRITE = T, findMarkersVariable = "cellID_short", displayVariable = "cellID_short", n_markers = 2, output = output_F2, nameMod = "plasma_topmarkers_nodoublet")
+
+ery <- merged |> subset(subset = (lineage_group == "E" & subcluster_V03072023_compartment == "Ery"))
+
+ery_lineage <- ery@meta.data |> dplyr::distinct(cellID_short, lineage_order)
+ery_lineage <- ery_lineage |> arrange(lineage_order)
+ery$cellID_short <- factor(ery$cellID_short, levels = ery_lineage$cellID_short)
+
+
+Idents(ery) <- "cellID_short"
+markers_and_heatmap(ery, FORCE_OVERWRITE = T, findMarkersVariable = "cellID_short", displayVariable = "cellID_short", n_markers = 2, output = output_F2, nameMod = "ery_topmarkers_nodoublet")
+
+
+# mkrs_Plasma <- list(
+#     c("IKGC", RPS10)
+# )
+
+# plotOuts <- plotMarkers(tmp,
+#     markerList = mkrs_cd8,
+#     plotLists = c("Dot", "Tile"),
+#     group.by = "cellID_short",
+#     nameMod = "cd8_subset_sen",
+#     output = output_F2,
+#     umapSlot = "umap",
+#     DOT_SIZE_X = 1.3,
+#     DOT_SIZE_Y = 1.3,
+#     dotBaseHeight = 2,
+#     dotBaseWidth = 4,
+#     dotScaleWidth = 0.25,
+#     dotScaleHeight = 0.25
+#     # dotScaleHeight = 0.25
+# )
+```
+
+
+```{r}
+
+```
