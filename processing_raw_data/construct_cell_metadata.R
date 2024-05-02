@@ -616,10 +616,10 @@ if (VALIDATE_COUNTS_FOR_RISK_AND_PROGRESSION) {
     ## Verify Numbers
     baseline <- md |> dplyr::filter(VJ_INTERVAL == "Baseline")
     davies_table <- table(baseline$davies_based_risk)
-    # stopifnot(davies_table["high_risk"] == 124)
-    # stopifnot(davies_table["standard_risk"] == 107)
+    # stopifnot(davies_table["high_risk"] == 123)
+    # stopifnot(davies_table["standard_risk"] == 108)
 
-    # 124 HR, 107 SR, 3 NC
+    # 123 HR, 108 SR, 3 NC
 
     skerget_table <- table(baseline$skerget_based_risk)
     # stopifnot(skerget_table["high_risk"] == 61)
@@ -773,7 +773,7 @@ nrow(TEST_VALUES)
 print("Should be 42 Inc, 83 NP, 71 P, 67 RP")
 table(TEST_VALUES$progression_group)
 
-print("Should be 124 high_risk, 107 standard_risk, 3 not calculable, 29 no data")
+print("Should be 123 high_risk, 108 standard_risk")
 table(TEST_VALUES$davies_based_risk)
 
 print("Should be 61 high_risk, 167 standard_risk, 5 not calculable, 29 no data")
@@ -817,7 +817,7 @@ quickTemplate <- function(dataSource, linkedby, dataFile, lastUpdated, notes = N
 
 
 aliquotMD_date <- "6/15/23"
-riskMD_date <- "7/14/23"
+riskMD_date <- "11/10/23"
 perPatMD_date <- "5/05/23"
 therapyMD_date <- "6/16/23"
 outcomesMD_date <- "4/14/23"
