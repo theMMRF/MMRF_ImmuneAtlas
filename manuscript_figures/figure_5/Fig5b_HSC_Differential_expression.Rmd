@@ -1,0 +1,182 @@
+---
+title: "Figure 5 - Differential Expression (HSC)"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Setup
+```{r init}
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+output_volcano <- file.path(output_F3, "Volcano", "HSC-Experimental")
+dir.create(output_volcano, showWarnings = F, recursive = T)
+```
+
+# Volcano, HSC
+
+```{r}
+library(paletteer)
+library(EnhancedVolcano)
+HSC <- merged |> subset(subset = (!!sym(cluster_group) %in% c("BEry.7") & VJ_INTERVAL == "Baseline" & progression_group %in% c("NP", "P", "RP")))
+
+
+# HSC_subset <- subset_and_markers(merged |> subset(subset = (!!sym(cluster_group) %in% c("BEry.7"))), "HSC", output = output_subset_object, dims = 25)
+
+
+rm(merged)
+gc()
+```
+
+
+```{r}
+# HSC <- HSC |> subset(davies_based_risk %in% c("standard_risk"))
+# output_volcano <- file.path(output_F3, "Volcano", "HSC-Experimental", "SR-Only")
+
+# dir.create(output_volcano, recursive = T, showWarnings = F)
+```
+
+# Figure 5b - HSC Limma
+
+```{r}
+Idents(HSC) <- HSC$progression_group
+
+library(limma)
+
+# Subset cluster of interest, get expression matrix
+expr <- as.matrix(GetAssayData(HSC, slot = "data", assay = "RNA"))
+md <- HSC@meta.data
+
+# Fit a model for NP and RP, correcting for siteXbatch
+design <- model.matrix(~ 0 + progression_group + siteXbatch, data = md)
+
+
+fit <- lmFit(expr, design)
+
+# Make a contrast for NP - RP (positive - NP enriched, negative - RP enriched), and fit with limma trend = TrUE
+x <- c("progression_groupRP - progression_groupNP")
+contrast <- makeContrasts(contrasts = x, levels = design) # NP is positive, RP is negative
+fit <- contrasts.fit(fit, contrast)
+fit <- eBayes(fit, trend = TRUE, robust = TRUE)
+
+# Get the table of fitted (adjusted) p-values, logFCs. Sort by the t statistic (effectively signed p-value). Break ties with logFC
+forVolcano <- topTable(fit, coef = 1, adjust = "BH", n = Inf, sort.by = "t", resort.by = "logFC") # Top by p.value - set 'sort.by' to 'logFC' for top by logFC
+write.csv(forVolcano, file.path(output_volcano, "HSC_Limma_Markers.csv"))
+
+forVolcano$gene <- rownames(forVolcano)
+forVolcano$avg_log2FC <- forVolcano$logFC
+forVolcano$p_val_adj <- forVolcano$adj.P.Val
+forVolcano$p_val <- forVolcano$P
+
+nprp <- forVolcano
+
+MYELOID <- c("SLAMF1", "VWF", "PML", "RUNX1", "FLI1", "RUNX1T1")
+LYMPHOID <- c("SOX4", "FLT3", "NOTCH1", "IL7RA", "TNFRSF13C")
+
+colors_volcano <- paletteer_d("suffrager::CarolMan")
+
+# create custom key-value pairs for different cell-types
+# this can be achieved with nested ifelse statements
+keyvals.color <- ifelse(
+    rownames(nprp) %in% LYMPHOID, colors_volcano[[4]],
+    ifelse(rownames(nprp) %in% MYELOID, colors_volcano[[1]], "grey")
+)
+
+
+keyvals.color[is.na(keyvals.color)] <- "grey"
+names(keyvals.color)[keyvals.color == "grey"] <- "Other"
+names(keyvals.color)[keyvals.color == colors_volcano[[1]]] <- "Myeloid"
+names(keyvals.color)[keyvals.color == colors_volcano[[4]]] <- "Lymphoid"
+
+keyvals.alpha <- ifelse(
+    rownames(nprp) %in% MYELOID, 1,
+    ifelse(rownames(nprp) %in% LYMPHOID, 1, 0.5)
+)
+
+keyvals.shape <- ifelse(
+    rownames(nprp) %in% LYMPHOID, 17,
+    ifelse(rownames(nprp) %in% MYELOID, 3, 1)
+)
+
+
+keyvals.shape[is.na(keyvals.shape)] <- 1
+
+names(keyvals.shape)[keyvals.shape == 3] <- "MYELOID"
+names(keyvals.shape)[keyvals.shape == 17] <- "LYMPHOID"
+
+selectLab <- rownames(nprp |> dplyr::filter(p_val < 0.0001 & abs(avg_log2FC) > 0.1))
+
+
+labels.color <- ifelse(
+    selectLab %in% LYMPHOID, colors_volcano[[4]],
+    ifelse(selectLab %in% MYELOID, colors_volcano[[1]], "grey")
+)
+
+library(EnhancedVolcano)
+
+annotations <- data.frame(
+    xpos = c(-Inf, Inf),
+    ypos = c(Inf, Inf),
+    annotateText = c(
+        "RP Enriched",
+        "NP Enriched"
+    ),
+    hjustvar = c(-.05, 1),
+    vjustvar = c(0.9, 0.9)
+)
+
+
+p <- nprp |> EnhancedVolcano(
+    lab = rownames(nprp),
+    x = "avg_log2FC",
+    y = "p_val_adj",
+    title = "HSC",
+    selectLab = selectLab,
+    labCol = labels.color,
+    colCustom = keyvals.color,
+    colAlpha = keyvals.alpha,
+    caption = "",
+    pCutoff = 0.0001,
+    FCcutoff = 0.1,
+    pointSize = 3.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.75,
+    max.overlaps = 20,
+    lengthConnectors = unit(0.007, "npc"),
+    labSize = 4.0
+) +
+    theme_prism() +
+    theme(plot.caption = element_blank(), plot.subtitle = element_blank()) +
+    geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), color = c("#4f2b8e", "#285291"), size = 6)
+
+
+
+pdf_and_png(p, output_volcano, "HSC_volcano_np_vs_rp", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+```
+
+
+# Figure 5b - Average logFC Bar Plot
+```{r}
+nprp_subset <- nprp |> dplyr::filter(gene %in% c("KLF6", "SOX4", "CD164", "CD34", "AREG", "EGR1", "KLF2", "ANXA1", "KIT"))
+nprp_subset <- nprp_subset |> arrange(logFC)
+nprp_subset$gene <- factor(nprp_subset$gene, levels = unique(nprp_subset$gene))
+p <- ggplot(nprp_subset, aes(x = factor(gene), y = logFC, fill = logFC)) +
+    geom_bar(stat = "identity") +
+    scale_fill_gradient2(low = fill_NP, mid = "lightgrey", high = fill_RP) +
+    geom_hline(yintercept = 0, color = "black") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 1)) +
+    theme_prism()
+
+pdf_and_png(p, output_volcano, "HSC_avglogfc_np_v_rp", pdfWidth = 3, pdfHeight = 1.5, scale = 3)
+# ggtitle("logFC for (raceAA - raceWhite) with model (~ 0 + race + group + project_origin)")
+```
+

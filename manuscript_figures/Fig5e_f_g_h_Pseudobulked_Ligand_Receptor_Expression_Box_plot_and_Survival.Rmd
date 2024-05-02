@@ -1,0 +1,302 @@
+---
+title: "Figure 5 - Survival"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+Figure 5e, f, g, h
+
+Survival analysis and Boxplots of select ligands and receptors 
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Setup
+```{r init}
+library(UCell)
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+baseline.data <- merged |> subset(VJ_INTERVAL == "Baseline")
+rm(merged)
+gc()
+```
+
+```{r}
+nkt <- subset(baseline.data, subset = (lineage_group %in% c("CD4", "CD8")))
+FEATURES <- c("IFNG", "CCL5", "CCL3", "CD27", "CD28", "CTLA4", "TNF", "CD40LG", "FLT3")
+
+tmp2_T <- AverageExpression(nkt, assays = "RNA", group.by = "public_id", features = FEATURES)$RNA |>
+    t() |>
+    as.data.frame()
+rm(nkt)
+gc()
+# MYELOID <- subset(baseline.data, subset = (lineage_group %in% c("M")))
+
+# FEATURES <- c("IRF1", "IFNGR1", "IFNGR2", "CD86", "HLA-DRA", "TNFRSF1B", "TNFAIP3", "IL1B", "TNFSF13", "TNFSF13B", "THBS1", "BAG6", "CCL5", "CCL3", "CXCL8", "ITGAM", "ITGB2")
+
+# tmp2_m <- AverageExpression(MYELOID, assays = "RNA", group.by = "public_id", features = FEATURES)$RNA |>
+#     t() |>
+#     as.data.frame()
+# rm(MYELOID)
+# gc()
+GLOBAL <- subset(baseline.data, subset = (lineage_group != "P"))
+
+FEATURES <- c("IFNG", "HLA-DRA", "CD4")
+
+tmp2_G <- AverageExpression(GLOBAL, assays = "RNA", group.by = "public_id", features = FEATURES)$RNA |>
+    t() |>
+    as.data.frame()
+rm(GLOBAL)
+gc()
+
+MYELOID_cd14 <- subset(baseline.data, subset = (subcluster_V03072023 %in% c("Myeloid.0", "Myeloid.1", "Myeloid.2", "Myeloid.3", "Myeloid.8", "Myeloid.12")))
+
+FEATURES <- c("IRF1", "IFNGR1", "IFNGR2", "CD86", "HLA-DRA", "TNFRSF1B", "TNFAIP3", "IL1B", "TNFSF13", "TNFSF13B", "THBS1", "BAG6", "CCL5", "CCL3", "CXCL8", "ITGAM", "ITGB2")
+
+tmp2_m_cd14 <- AverageExpression(MYELOID_cd14, assays = "RNA", group.by = "public_id", features = FEATURES)$RNA |>
+    t() |>
+    as.data.frame()
+rm(MYELOID_cd14)
+gc()
+```
+
+# Figure 5e, f, g, h - Box plots and Survival Curves for Various pseudobulked average expressions 
+
+5e,f - Tcell, IFNG
+
+5g,h - Myeloid, IFNGR2
+```{r}
+library(ggstatsplot)
+library(ggpubr)
+library(forestmodel)
+library(gtsummary)
+library(survival)
+library(ggsurvfit)
+library(contsurvplot)
+library(survminer)
+output_surv <- file.path(output, "Fig5", "check_per_patient_expression")
+
+dir.create(output_surv, showWarnings = F, recursive = T)
+library(ggbeeswarm)
+md_bl <- baseline.data@meta.data |> dplyr::distinct(public_id, progression_group, davies_based_risk, siteXbatch, pfscdy, censpfs, d_lot_1_start_day)
+
+color_low <- "#2c90c3"
+color_high <- "#5a221b"
+
+make_surv_and_vln_plot <- function(features, md_bl, ylab = "", celltypes = "TBD") {
+    colnames(features) <- make.names(colnames(features))
+    output_surv <- file.path(output_surv, celltypes)
+    dir.create(output_surv, showWarnings = F, recursive = T)
+
+    feature_list <- colnames(features)
+    features$public_id <- rownames(features)
+    tmp <- dplyr::left_join(features, md_bl, by = "public_id")
+    p_box_nprp <- list()
+    p_box_sr_nprp <- list()
+    # p_surv_nprp <- list()
+    # p_surv_sr_nprp <- list()
+    for (feat in feature_list) {
+        tmp_nprp <- tmp |> dplyr::filter(progression_group %in% c("NP", "RP"))
+
+        pvals_wilcox <- tmp_nprp |>
+            rstatix::wilcox_test(as.formula(paste0(feat, " ~ progression_group"))) |>
+            rstatix::add_xy_position()
+
+        p_box_nprp[[feat]] <- ggplot(tmp_nprp, aes(x = progression_group, y = !!sym(feat), fill = progression_group, color = progression_group)) +
+            geom_violin(alpha = 0.75) +
+            geom_boxplot(outlier.shape = NA, width = 0.2, alpha = 0.5) +
+            geom_quasirandom(shape = 1, show.legend = F, width = 0.3, alpha = 0.75) +
+            ylab(paste0(ylab)) +
+            ggtitle(feat) +
+            theme_prism() +
+            theme(axis.title.x = element_blank()) +
+            scale_fill_manual(values = fill_theme_binary) +
+            scale_color_manual(values = color_theme_binary) +
+            NoLegend() +
+            ggpubr::stat_pvalue_manual(pvals_wilcox, xmin = "xmin", xmax = "xmax", label = "p", inherit.aes = F, size = 5)
+
+        pdf_and_png(p_box_nprp[[feat]], output_surv, paste0("per_pat_", feat, "_all_pat"), pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+
+        tmp_sr_nprp <- tmp |> dplyr::filter(progression_group %in% c("NP", "RP") & davies_based_risk == "standard_risk")
+
+        pvals_wilcox <- tmp_sr_nprp |>
+            rstatix::wilcox_test(as.formula(paste0(feat, " ~ progression_group"))) |>
+            rstatix::add_xy_position()
+
+        p_box_sr_nprp[[feat]] <- ggplot(tmp_sr_nprp, aes(x = progression_group, y = !!sym(feat), fill = progression_group, color = progression_group)) +
+            geom_violin(alpha = 0.75) +
+            geom_boxplot(outlier.shape = NA, width = 0.2, alpha = 0.5) +
+            geom_quasirandom(shape = 1, show.legend = F, width = 0.3, alpha = 0.75) +
+            ylab(paste0(ylab)) +
+            ggtitle(feat) +
+            theme_prism() +
+            theme(axis.title.x = element_blank()) +
+            scale_fill_manual(values = fill_theme_binary) +
+            scale_color_manual(values = color_theme_binary) +
+            NoLegend() +
+            ggpubr::stat_pvalue_manual(pvals_wilcox, xmin = "xmin", xmax = "xmax", label = "p", inherit.aes = F, size = 5)
+
+        pdf_and_png(p_box_sr_nprp[[feat]], output_surv, paste0("per_pat_", feat, "_sr_pat"), pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+
+        # ALL PATIENTS
+
+        tmp_surv <- tmp |> dplyr::filter(d_lot_1_start_day < 2)
+
+        tmp_surv$survVar <- tmp_surv[, feat]
+        # med_val <- median(tmp_surv$survVar)
+        med_val <- surv_cutpoint(tmp_surv, time = "pfscdy", event = "censpfs", variables = "survVar", minprop = 0.2)$cutpoint$cutpoint
+
+        tmp_surv <- tmp_surv %>% mutate(median_cutoff = case_when(
+            .data[[feat]] < med_val ~ "Low",
+            .data[[feat]] >= med_val ~ "High"
+        ))
+        tmp_surv$time <- tmp_surv$pfscdy
+
+        p_surv_a <- survfit2(Surv(pfscdy, censpfs) ~ median_cutoff, data = tmp_surv) %>% ggsurvfit(size = 2) +
+            labs(
+                x = "Days",
+                y = "Progression Free Survival"
+            ) +
+            add_censor_mark(size = 3) +
+            # add_risktable() +
+            theme_prism() +
+            ggtitle(paste0("Average Expression of ", feat, "All Patients")) +
+            scale_color_manual(values = c("Low" = color_low, "High" = color_high))
+
+        cox_cont_sxb <- coxph(Surv(pfscdy, censpfs) ~ survVar + siteXbatch, data = tmp_surv, x = TRUE)
+
+        p_area_a <- plot_surv_area(
+            time = "pfscdy",
+            status = "censpfs",
+            variable = "survVar",
+            data = tmp_surv,
+            model = cox_cont_sxb,
+            start_color = color_low,
+            end_color = color_high
+        )
+
+        pval <- summary(cox_cont_sxb)$coefficients["survVar", "Pr(>|z|)"]
+        HR <- summary(cox_cont_sxb)$coefficients["survVar", "exp(coef)"]
+
+        pval <- round(pval, digits = 4)
+
+        annotations <- data.frame(
+            xpos = c(-Inf),
+            ypos = c(-Inf),
+            annotateText = c(
+                paste0("HR: ", round(HR, digits = 3), "\n", "CoxPH P.Value: ", scales::pvalue(pval))
+            ),
+            hjustvar = c(0),
+            vjustvar = c(0)
+        )
+
+        p_surv_cox_a <- p_surv_a + geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), color = c("black"), size = 6)
+        p_surv_cox_a <- ggsurvfit_build(p_surv_cox_a)
+
+        annotations_b <- data.frame(
+            xpos = c(Inf),
+            ypos = c(Inf),
+            annotateText = c(
+                paste0("HR: ", round(HR, digits = 3), "\nCoxPH P.Value: ", scales::pvalue(pval))
+            ),
+            hjustvar = c(1),
+            vjustvar = c(1)
+        )
+        p_area_a <- p_area_a + geom_text(data = annotations_b, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), color = c("black"), size = 6)
+        combined_a <- p_surv_cox_a + p_area_a
+
+        pdf_and_png(p_surv_cox_a, output_surv, paste0(feat, "_median_surv_all_pat"), pdfWidth = W_DBL / 3, pdfHeight = H_FULL, scale = 3)
+        pdf_and_png(p_area_a, output_surv, paste0(feat, "_area_surv_all_pat"), pdfWidth = W_DBL / 3, pdfHeight = H_FULL, scale = 3)
+        pdf_and_png(combined_a, output_surv, paste0(feat, "_median_and_area_surv_all_pat"), pdfWidth = 2 * W_DBL / 3, pdfHeight = H_FULL, scale = 3)
+
+        ## STANDARD_RISK
+
+        tmp_surv <- tmp |>
+            dplyr::filter(d_lot_1_start_day < 2) |>
+            dplyr::filter(davies_based_risk == "standard_risk")
+
+        tmp_surv$survVar <- tmp_surv[, feat]
+        # med_val <- median(tmp_surv$survVar)
+        med_val <- surv_cutpoint(tmp_surv, time = "pfscdy", event = "censpfs", variables = "survVar", minprop = 0.2)$cutpoint$cutpoint
+
+        tmp_surv <- tmp_surv %>% mutate(median_cutoff = case_when(
+            .data[[feat]] < med_val ~ "Low",
+            .data[[feat]] >= med_val ~ "High"
+        ))
+        tmp_surv$time <- tmp_surv$pfscdy
+
+        p_surv_a <- survfit2(Surv(pfscdy, censpfs) ~ median_cutoff, data = tmp_surv) %>% ggsurvfit(size = 2) +
+            labs(
+                x = "Days",
+                y = "Progression Free Survival"
+            ) +
+            add_censor_mark(size = 3) +
+            # add_risktable() +
+            theme_prism() +
+            ggtitle(paste0("Average Expression of ", feat, "SR Patients")) +
+            scale_color_manual(values = c("Low" = color_low, "High" = color_high))
+
+        cox_cont_sxb <- coxph(Surv(pfscdy, censpfs) ~ survVar + siteXbatch, data = tmp_surv, x = TRUE)
+
+        p_area_a <- plot_surv_area(
+            time = "pfscdy",
+            status = "censpfs",
+            variable = "survVar",
+            data = tmp_surv,
+            model = cox_cont_sxb,
+            start_color = color_low,
+            end_color = color_high
+        )
+
+        pval <- summary(cox_cont_sxb)$coefficients["survVar", "Pr(>|z|)"]
+        HR <- summary(cox_cont_sxb)$coefficients["survVar", "exp(coef)"]
+
+        pval <- round(pval, digits = 4)
+
+        annotations <- data.frame(
+            xpos = c(-Inf),
+            ypos = c(-Inf),
+            annotateText = c(
+                paste0("HR: ", round(HR, digits = 3), "\n", "CoxPH P.Value: ", scales::pvalue(pval))
+            ),
+            hjustvar = c(0),
+            vjustvar = c(0)
+        )
+
+        p_surv_cox_a <- p_surv_a + geom_text(data = annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), color = c("black"), size = 6)
+        p_surv_cox_a <- ggsurvfit_build(p_surv_cox_a)
+
+        annotations_b <- data.frame(
+            xpos = c(Inf),
+            ypos = c(Inf),
+            annotateText = c(
+                paste0("HR: ", round(HR, digits = 3), "\nCoxPH P.Value: ", scales::pvalue(pval))
+            ),
+            hjustvar = c(1),
+            vjustvar = c(1)
+        )
+        p_area_a <- p_area_a + geom_text(data = annotations_b, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), color = c("black"), size = 6)
+        combined_a <- p_surv_cox_a + p_area_a
+
+        pdf_and_png(p_surv_cox_a, output_surv, paste0(feat, "_median_surv_SR_pat"), pdfWidth = W_DBL / 3, pdfHeight = H_FULL, scale = 3)
+        pdf_and_png(p_area_a, output_surv, paste0(feat, "_area_surv_SR_pat"), pdfWidth = W_DBL / 3, pdfHeight = H_FULL, scale = 3)
+        pdf_and_png(combined_a, output_surv, paste0(feat, "_median_and_area_surv_SR_pat"), pdfWidth = 2 * W_DBL / 3, pdfHeight = H_FULL, scale = 3)
+    }
+}
+
+make_surv_and_vln_plot(tmp2_T, md_bl, "Per Patient Average Expression across T Cells", "tcell")
+# make_surv_and_vln_plot(tmp2_m, md_bl, "Per Patient Average Expression across Myeloid Cells", "myeloid") # Stick with CD14+ Mono for parity with Fig4 c-e
+make_surv_and_vln_plot(tmp2_G, md_bl, "Per Patient Average Expression across Non-Malignant Cells", "nonmalignant")
+make_surv_and_vln_plot(tmp2_m_cd14, md_bl, "Per Patient Average Expression across CD14+ Mono", "CD14_mono")
+```
+
+```{r}
+
+```

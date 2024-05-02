@@ -1,0 +1,820 @@
+---
+title: "Supplemental Figure 13/Figure 5 - Standard Risk NP v RP Differential Abundance Plots"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+Renders the Standard Risk Only NP v RP Differential Abundance Supplemental Figure (Supplemental Figure 13)
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Setup
+```{r init}
+library(ggpubr)
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+source("source/Helper_Functions/COMMON_diff_abundance_functions.R", local = T)
+
+
+output_expr <- file.path(output_F3, "Supplemental", "Experimental", "standard_risk_only")
+
+output_extra <- file.path(output_F3, "Diff_Abundance")
+output_box <- file.path(output_extra, "Diff_Abundance_Box")
+output_raw_csv <- file.path(output_extra, "CSV")
+output_abun_volcano <- file.path(output_extra, "Diff_Abun_Volcano")
+dir.create(output_extra, showWarnings = F, recursive = T)
+dir.create(output_box, showWarnings = F, recursive = T)
+dir.create(output_raw_csv, showWarnings = F, recursive = T)
+dir.create(output_abun_volcano, showWarnings = F, recursive = T)
+dir.create(output_expr, showWarnings = F, recursive = T)
+
+fill_theme_binary <- c(
+    "NP.SR" = fill_NP,
+    "RP.SR" = fill_RP
+)
+
+color_theme_binary <- c(
+    "NP.SR" = color_NP,
+    "RP.SR" = color_RP
+)
+
+fill_theme_emphasis <- c(
+    "NP.SR" = fill_NP,
+    "NP.SR*" = color_NP,
+    "RP.SR" = fill_RP,
+    "RP.SR*" = color_RP,
+    "No Difference" = "white"
+)
+
+floral_fill_theme <- list(
+    "NP.SR (SIG)" = fill_NP,
+    "NP.SR" = color_NP,
+    "RP.SR (SIG)" = fill_RP,
+    "RP.SR" = color_RP
+)
+
+floral_color_theme <- list(
+    "NP.SR (SIG)" = fill_NP,
+    "NP.SR" = color_NP,
+    "RP.SR (SIG)" = fill_RP,
+    "RP.SR" = color_RP
+)
+```
+
+# Differential Abundance - Setup Counts Data
+
+```{r}
+baseline <- merged |> subset(VJ_INTERVAL == "Baseline")
+Idents(baseline) <- baseline@meta.data[, cluster_group]
+#  baseline$pfs_risk <- paste0(baseline$progression_group, "_", baseline$davies_based_risk)
+
+counts <- table(baseline$public_id, baseline@meta.data[, cluster_group])
+
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, progression_group, Batch, siteXbatch, Study_Site, Batch, davies_based_risk, d_pt_race_1)
+
+md_bl$pfs_risk <- paste0(md_bl$progression_group, md_bl$davies_based_risk)
+md_bl <- md_bl |> dplyr::mutate(pfs_risk = dplyr::case_when(
+    pfs_risk == "NPstandard_risk" ~ "NP.SR",
+    pfs_risk == "RPstandard_risk" ~ "RP.SR",
+    .default = pfs_risk
+))
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+
+cluster_md <- baseline@meta.data |> dplyr::distinct(!!sym(cluster_group), isDoublet, subcluster_V03072023_compartment, lineage_group, lineage_order, cellID_short, cellID_long)
+colnames(cluster_md)[1] <- "cluster"
+counts <- counts |> dplyr::left_join(cluster_md, by = "cluster")
+```
+
+```{r}
+all_cells <- new.env()
+
+all_cells$counts <- counts |> dplyr::filter(lineage_group != "LQ")
+
+all_cells$outs <- quickWilcoxAndPlots(all_cells$counts |> dplyr::filter(lineage_group != "LQ"), "pfs_risk", "RP.SR", "NP.SR")
+all_cells$cluster_size <- all_cells$outs$counts_with_props |>
+    group_by(cellID_short) |>
+    dplyr::summarise(sum = sum(Counts))
+
+all_cells$cluster_md <- cluster_md
+all_cells$cluster_md$subcluster_V03072023 <- all_cells$cluster_md$cluster
+
+all_cells$outs$wilcox_out <- dplyr::left_join(all_cells$outs$wilcox_out, all_cells$cluster_md, by = "cluster")
+all_cells$outs$wilcox_out_select <- all_cells$outs$wilcox_out |> dplyr::select(cluster, mean_A, mean_B, fold_change, fold_change_for_display, p, padj, group1, group2)
+
+all_cells$counts_plotting <- all_cells$outs$counts_with_props
+all_cells$counts_plotting <- all_cells$counts_plotting |> dplyr::left_join(all_cells$cluster_size, "cellID_short")
+all_cells$counts_plotting <- all_cells$counts_plotting |> dplyr::left_join(all_cells$outs$wilcox_out_select, "cluster")
+```
+
+# Wilcoxon Volcano
+```{r}
+wilcox_plot_env <- new.env()
+wilcox_plot_env$wilcox_out <- all_cells$outs$wilcox_out
+wilcox_plot_env$wilcox_out <- wilcox_plot_env$wilcox_out |> dplyr::mutate(fold_change = dplyr::case_when(
+    fold_change > 2^2.5 ~ 2^2.5,
+    fold_change < 2^-2.5 ~ 2^-2.5,
+    .default = fold_change
+))
+x_max_range <- max(abs(wilcox_plot_env$wilcox_out$rank_biserial))
+
+wilcox_plot_env$p <- ggplot(wilcox_plot_env$wilcox_out) +
+    geom_point(aes(x = rank_biserial, y = -log10(p + 1e-200), fill = direction, color = direction, alpha = 0.5), show.legend = F) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = -log10(0.05 + 1e-200), color = "black", size = 1) +
+    geom_label_repel(aes(x = rank_biserial, y = -log10(p + 1e-200), label = cellID_short, fill = direction), max.overlaps = 15) +
+    xlim(-x_max_range, x_max_range) +
+    ggtitle("Differential Abundance - All Cells") +
+    theme_prism()
+
+wilcox_plot_env$annotations <- data.frame(
+    xpos = c(-Inf, Inf),
+    ypos = c(Inf, Inf),
+    annotateText = c(
+        "NP.SR Enriched",
+        "RP.SR Enriched"
+    ),
+    hjustvar = c(-.05, 1),
+    vjustvar = c(1, 1)
+)
+
+wilcox_plot_env$p <- wilcox_plot_env$p +
+    scale_fill_manual(values = floral_fill_theme, breaks = names(floral_fill_theme), labels = c("NP.SR*", "NP.SR", "RP.SR*", "RP.SR")) +
+    scale_color_manual(values = floral_color_theme) +
+    xlab("Rank-Biserial Correlation") +
+    ylab("-log10 P Value") +
+    ggtitle("Differential Abundance, All Clusters") +
+    geom_text(data = wilcox_plot_env$annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), size = 6)
+```
+
+# Generate the boxplots
+
+```{r}
+box_plots <- new.env()
+box_plots$data <- all_cells$counts_plotting |> dplyr::filter(pfs_risk %in% c("NP.SR", "RP.SR"))
+
+box_plots$data <- box_plots$data |> dplyr::arrange(lineage_group, desc(sum))
+
+box_plots$panels <- unique(box_plots$data$cluster)
+
+box_plots$plot_list <- list()
+box_plots$plot_list_bar <- list()
+
+box_plots$per_clust_max <- box_plots$data |>
+    dplyr::group_by(cluster, pfs_risk) |>
+    dplyr::summarise(Q1 = quantile(prop, 0.25), Q3 = quantile(prop, 0.75), IQR = Q3 - Q1, upper = min(max(prop), Q3 + 1.5 * IQR), lower = max(min(prop), Q1 - 1.5 * IQR)) |>
+    dplyr::group_by(cluster) |>
+    dplyr::summarise(lower_min = min(lower), upper_max = max(upper), IQR_max = max(IQR), y.position = upper_max + 0.5 * IQR_max, y.position.alt = upper_max + 0.2 * IQR_max)
+
+box_plots$per_clust_max <- box_plots$per_clust_max |> dplyr::mutate(
+    y.position = dplyr::case_when(
+        y.position == 0 ~ 0.001,
+        .default = y.position
+    ),
+    y.position.alt = dplyr::case_when(
+        y.position.alt == 0 ~ 0.001,
+        .default = y.position.alt
+    )
+)
+
+box_plots$data <- box_plots$data |> dplyr::left_join(box_plots$per_clust_max, by = "cluster")
+
+
+grouping_var <- "pfs_risk"
+wrap_point <- 6
+
+custom_lin_group_order <- c("CD8", "CD4", "Nk", "M", "B", "Other", "E", "P")
+for (k in custom_lin_group_order) {
+    box_plots$panels_select <- box_plots$data |>
+        dplyr::filter(lineage_group == k) |>
+        dplyr::distinct(cluster)
+
+    box_plots$panels_select <- box_plots$panels_select[["cluster"]]
+
+    box_plots$plot_list[[k]] <- list()
+
+    for (i in box_plots$panels_select) {
+        box_plots$tmp <- box_plots$data |> dplyr::filter(cluster == i)
+        box_plots$tmp[[grouping_var]] <- factor(box_plots$tmp[[grouping_var]], levels = c("NP.SR", "RP.SR"))
+
+        box_plots$tmp_distinct <- box_plots$tmp |> dplyr::distinct(cluster, p, y.position, y.position.alt, cluster_size, cellID_short, group1, group2)
+
+
+        box_plots$plot_list[[k]][[i]] <- ggplot(box_plots$tmp) +
+            geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+            geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+            stat_pvalue_manual(box_plots$tmp_distinct, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+            theme_prism() +
+            ylim(c(0, box_plots$tmp_distinct$y.position)) +
+            scale_fill_manual(values = fill_theme_binary) +
+            scale_color_manual(values = color_theme_binary) +
+            theme(axis.title.x = element_blank()) +
+            ylab(bquote(atop("Proportion", "of all Cells"))) +
+            NoLegend() +
+            coord_cartesian(clip = "off") +
+            theme(axis.title.x = element_blank()) +
+            ggtitle(box_plots$tmp_distinct$cellID_short) +
+            theme(plot.title = element_text(size = 14, face = "bold"))
+    }
+}
+
+test <- list()
+test_b <- list()
+heights <- c()
+heights_b <- list()
+widths_b <- list()
+
+heights_b_con <- c()
+widths_b_con <- c()
+
+for (i in 1:(4 * wrap_point)) {
+    test_b[[i]] <- plot_spacer()
+}
+# Use the Design matrix to add gaps in the plot
+for (k in custom_lin_group_order) {
+    for (i in seq_along(box_plots$plot_list[[k]])) {
+        if (mod(i - 1, wrap_point) != 0) {
+            box_plots$plot_list[[k]][[i]] <- box_plots$plot_list[[k]][[i]] + theme(axis.title.y = element_blank())
+        }
+    }
+    numPlots <- length(box_plots$plot_list[[k]])
+    if (numPlots > 0) {
+        if (mod(numPlots, wrap_point) != 0) {
+            idx <- 1
+            for (i in (mod(numPlots, wrap_point) + 1):wrap_point) {
+                box_plots$plot_list[[k]][[numPlots + idx]] <- plot_spacer()
+                idx <- idx + 1
+            }
+        }
+        updated_size <- length(box_plots$plot_list[[k]])
+        for (i in 1:6) {
+            box_plots$plot_list[[k]][[updated_size + i]] <- plot_spacer()
+        }
+        widths_b[[k]] <- rep(1.0, length(box_plots$plot_list[[k]]))
+        heights_b[[k]] <- rep(1.0, length(box_plots$plot_list[[k]]))
+
+        widths_b_con <- c(widths_b_con, widths_b[[k]])
+        heights_b_con <- c(heights_b_con, heights_b[[k]])
+
+        test_b <- c(test_b, box_plots$plot_list[[k]])
+        test[[k]] <- wrap_plots(box_plots$plot_list[[k]], ncol = wrap_point)
+        heights[k] <- ceiling(length(box_plots$plot_list[[k]]) / wrap_point)
+    }
+}
+
+patchwork_nrows <- ceiling(length(test_b) / wrap_point)
+patchwork_area <- ceiling(sqrt(length(test_b))) # ?????????????????
+
+# dark magic
+design_mat <- patchwork::area()
+base <- 0
+for (i in seq_along(test_b)) {
+    col <- mod(i - 1, wrap_point) + 1
+    row <- ceiling(i / wrap_point)
+
+    design_mat <- c(design_mat, area(t = base + row, b = base + row, l = col, r = col))
+}
+
+test_multi <- wrap_plots(test_b, ncol = wrap_point, heights = heights_b_con)
+```
+
+```{r}
+patchwork_nrows <- ceiling(length(test_b) / wrap_point)
+test_multi_with_wilcox <- test_multi + wilcox_plot_env$p + plot_layout(design = c(
+    design_mat,
+    area(t = 1, b = 3, l = 2, r = 5)
+))
+
+# test_multi <- wrap_plots(test, ncol = 1, heights = heights) + plot_annotation(tag_levels = list(names(test)))
+# test_2 <- wilcox_plot_env$p / test_all
+pdf_and_png(test_multi_with_wilcox, output_expr, "wrapped_cd8_test", pdfWidth = 3 * W_FULL, pdfHeight = H_FULL * patchwork_nrows / 2, scale = 3)
+
+test_multi_with_wilcox_free <- test_multi + free(wilcox_plot_env$p) + plot_layout(design = c(
+    design_mat,
+    area(t = 1, b = 3, l = 2, r = 5)
+))
+
+pdf_and_png(test_multi_with_wilcox_free, output_expr, "wrapped_cd8_test_free_wilcox", pdfWidth = 3 * W_FULL, pdfHeight = H_FULL * sum(heights) / 2, scale = 3)
+```
+
+# Supplemental Figure 13
+
+Generate box plots for various subcompartments, and compile into large figures
+
+Supplemental Figure 13 - Non-Malignant
+
+```{r}
+baseline <- merged |> subset(VJ_INTERVAL == "Baseline")
+Idents(baseline) <- baseline@meta.data[, cluster_group]
+#  baseline$pfs_risk <- paste0(baseline$pfs_risk, "_", baseline$davies_based_risk)
+
+counts <- table(baseline$public_id, baseline@meta.data[, cluster_group])
+
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, progression_group, Batch, siteXbatch, Study_Site, Batch, davies_based_risk, d_pt_race_1)
+
+md_bl$pfs_risk <- paste0(md_bl$progression_group, md_bl$davies_based_risk)
+md_bl <- md_bl |> dplyr::mutate(pfs_risk = dplyr::case_when(
+    pfs_risk == "NPstandard_risk" ~ "NP.SR",
+    pfs_risk == "RPstandard_risk" ~ "RP.SR",
+    .default = pfs_risk
+))
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+
+cluster_md <- baseline@meta.data |> dplyr::distinct(!!sym(cluster_group), isDoublet, subcluster_V03072023_compartment, lineage_group, lineage_order, cellID_short, cellID_long)
+colnames(cluster_md)[1] <- "cluster"
+counts <- counts |> dplyr::left_join(cluster_md, by = "cluster")
+
+types_list <- list(
+    "CD3+" = c("CD8", "CD4"),
+    "Myeloid" = "M",
+    "B" = "B",
+    "CD8+" = "CD8",
+    "CD4+" = "CD4",
+    "Nk" = "Nk",
+    "Immune" = c("CD8", "CD4", "M", "B", "Other", "Nk"),
+    "Non-Malignant" = c("CD8", "CD4", "M", "B", "Other", "Nk", "E"),
+    "All" = c("CD8", "CD4", "M", "B", "Other", "Nk", "P", "E")
+)
+file_name_list <- list(
+    "CD3+" = "cd3_only",
+    "Myeloid" = "myeloid_only",
+    "B" = "b_only",
+    "CD8+" = "cd8_only",
+    "CD4+" = "cd4_only",
+    "Nk" = "nk_only",
+    "Immune" = "immune_only",
+    "Non-Malignant" = "all_clusters_no_plasma",
+    "All" = "all_cells"
+)
+
+for (idx_name in names(types_list)) {
+    all_cells <- new.env()
+
+    all_cells$counts <- counts |> dplyr::filter(lineage_group %in% types_list[[idx_name]])
+    all_cells$outs <- quickWilcoxAndPlots(all_cells$counts, "pfs_risk", "RP.SR", "NP.SR")
+    all_cells$cluster_size <- all_cells$outs$counts_with_props |>
+        group_by(cellID_short) |>
+        dplyr::summarise(sum = sum(Counts))
+
+    all_cells$cluster_md <- cluster_md
+    all_cells$cluster_md$subcluster_V03072023 <- all_cells$cluster_md$cluster
+
+    all_cells$outs$wilcox_out <- dplyr::left_join(all_cells$outs$wilcox_out, all_cells$cluster_md, by = "cluster")
+    all_cells$outs$wilcox_out_select <- all_cells$outs$wilcox_out |> dplyr::select(cluster, mean_A, mean_B, fold_change, fold_change_for_display, p, padj, group1, group2)
+
+    all_cells$counts_plotting <- all_cells$outs$counts_with_props
+    all_cells$counts_plotting <- all_cells$counts_plotting |> dplyr::left_join(all_cells$cluster_size, "cellID_short")
+    all_cells$counts_plotting <- all_cells$counts_plotting |> dplyr::left_join(all_cells$outs$wilcox_out_select, "cluster")
+
+
+    wilcox_plot_env <- new.env()
+    wilcox_plot_env$wilcox_out <- all_cells$outs$wilcox_out
+    wilcox_plot_env$wilcox_out <- wilcox_plot_env$wilcox_out |> dplyr::mutate(fold_change = dplyr::case_when(
+        fold_change > 2^2.5 ~ 2^2.5,
+        fold_change < 2^-2.5 ~ 2^-2.5,
+        .default = fold_change
+    ))
+    wilcox_plot_env$wilcox_out$direction <- factor(wilcox_plot_env$wilcox_out$direction, levels = c("NP.SR (SIG)", "NP.SR", "RP.SR (SIG)", "RP.SR"))
+
+    x_max_range <- max(abs(wilcox_plot_env$wilcox_out$rank_biserial))
+
+    wilcox_plot_env$p <- ggplot(wilcox_plot_env$wilcox_out) +
+        geom_point(aes(x = rank_biserial, y = -log10(p + 1e-200), fill = direction, color = direction, alpha = 0.5), show.legend = F) +
+        geom_vline(xintercept = 0, color = "black", size = 1) +
+        geom_hline(yintercept = -log10(0.05 + 1e-200), color = "black", size = 1) +
+        geom_label_repel(aes(x = rank_biserial, y = -log10(p + 1e-200), label = cellID_short, fill = direction), color = "white", max.overlaps = 15, segment.colour = "black") +
+        xlim(-x_max_range, x_max_range) +
+        ggtitle(paste0("Differential Abundance, ", idx_name)) +
+        theme_prism()
+
+    wilcox_plot_env$annotations <- data.frame(
+        xpos = c(-Inf, Inf),
+        ypos = c(Inf, Inf),
+        annotateText = c(
+            "NP.SR Enriched",
+            "RP.SR Enriched"
+        ),
+        hjustvar = c(-.05, 1),
+        vjustvar = c(1, 1)
+    )
+
+    wilcox_plot_env$p <- wilcox_plot_env$p +
+        scale_fill_manual(values = floral_fill_theme, breaks = names(floral_fill_theme), labels = c("NP.SR*", "NP.SR", "RP.SR*", "RP.SR")) +
+        scale_color_manual(values = floral_color_theme) +
+        xlab("Rank-Biserial Correlation") +
+        ylab("-log10 P Value") +
+        ggtitle(paste0("Differential Abundance, ", idx_name)) +
+        geom_text(data = wilcox_plot_env$annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), size = 6)
+
+    box_plots <- new.env()
+    box_plots$data <- all_cells$counts_plotting |> dplyr::filter(pfs_risk %in% c("NP.SR", "RP.SR"))
+
+    box_plots$data <- box_plots$data |> dplyr::arrange(lineage_group, desc(sum))
+
+    box_plots$panels <- unique(box_plots$data$cluster)
+
+    box_plots$plot_list <- list()
+    box_plots$plot_list_bar <- list()
+
+    box_plots$per_clust_max <- box_plots$data |>
+        dplyr::group_by(cluster, pfs_risk) |>
+        dplyr::summarise(Q1 = quantile(prop, 0.25), Q3 = quantile(prop, 0.75), IQR = Q3 - Q1, upper = min(max(prop), Q3 + 1.5 * IQR), lower = max(min(prop), Q1 - 1.5 * IQR)) |>
+        dplyr::group_by(cluster) |>
+        dplyr::summarise(lower_min = min(lower), upper_max = max(upper), IQR_max = max(IQR), y.position = upper_max + 0.5 * IQR_max, y.position.alt = upper_max + 0.2 * IQR_max)
+
+    box_plots$per_clust_max <- box_plots$per_clust_max |> dplyr::mutate(
+        y.position = dplyr::case_when(
+            y.position == 0 ~ 0.001,
+            .default = y.position
+        ),
+        y.position.alt = dplyr::case_when(
+            y.position.alt == 0 ~ 0.001,
+            .default = y.position.alt
+        )
+    )
+
+    box_plots$data <- box_plots$data |> dplyr::left_join(box_plots$per_clust_max, by = "cluster")
+
+
+    grouping_var <- "pfs_risk"
+    wrap_point <- 6
+
+    custom_lin_group_order <- unique(all_cells$counts$lineage_group)
+    for (k in types_list[[idx_name]]) {
+        box_plots$panels_select <- box_plots$data |>
+            dplyr::filter(lineage_group == k) |>
+            dplyr::distinct(cluster)
+
+        box_plots$panels_select <- box_plots$panels_select[["cluster"]]
+
+        box_plots$plot_list[[k]] <- list()
+
+        for (i in box_plots$panels_select) {
+            box_plots$tmp <- box_plots$data |> dplyr::filter(cluster == i)
+            box_plots$tmp[[grouping_var]] <- factor(box_plots$tmp[[grouping_var]], levels = c("NP.SR", "RP.SR"))
+
+            box_plots$tmp_distinct <- box_plots$tmp |> dplyr::distinct(cluster, p, y.position, y.position.alt, cluster_size, cellID_short, group1, group2)
+
+            box_plots$plot_list[[k]][[i]] <- ggplot(box_plots$tmp) +
+                geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+                geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+                stat_pvalue_manual(box_plots$tmp_distinct, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+                theme_prism() +
+                ylim(c(0, box_plots$tmp_distinct$y.position)) +
+                scale_fill_manual(values = fill_theme_binary) +
+                scale_color_manual(values = color_theme_binary) +
+                theme(axis.title.x = element_blank()) +
+                ylab(bquote(atop("Proportion", "of " ~ .(idx_name) ~ " Cells"))) +
+                NoLegend() +
+                coord_cartesian(clip = "off") +
+                theme(axis.title.x = element_blank()) +
+                ggtitle(box_plots$tmp_distinct$cellID_short) +
+                theme(plot.title = element_text(size = 14, face = "bold"))
+        }
+    }
+
+    test <- list()
+    test_b <- list()
+    heights <- c()
+    heights_b <- list()
+    widths_b <- list()
+
+    heights_b_con <- c()
+    widths_b_con <- c()
+
+    for (i in 1:(4 * wrap_point)) {
+        test_b[[i]] <- plot_spacer()
+    }
+    # Use the Design matrix to add gaps in the plot
+    for (k in types_list[[idx_name]]) {
+        for (i in seq_along(box_plots$plot_list[[k]])) {
+            if (mod(i - 1, wrap_point) != 0) {
+                box_plots$plot_list[[k]][[i]] <- box_plots$plot_list[[k]][[i]] + theme(axis.title.y = element_blank())
+            }
+        }
+        numPlots <- length(box_plots$plot_list[[k]])
+        if (numPlots > 0) {
+            if (mod(numPlots, wrap_point) != 0) {
+                idx <- 1
+                for (i in (mod(numPlots, wrap_point) + 1):wrap_point) {
+                    box_plots$plot_list[[k]][[numPlots + idx]] <- plot_spacer()
+                    idx <- idx + 1
+                }
+            }
+            updated_size <- length(box_plots$plot_list[[k]])
+            for (i in 1:6) {
+                box_plots$plot_list[[k]][[updated_size + i]] <- plot_spacer()
+            }
+            widths_b[[k]] <- rep(1.0, length(box_plots$plot_list[[k]]))
+            heights_b[[k]] <- rep(1.0, length(box_plots$plot_list[[k]]))
+
+            widths_b_con <- c(widths_b_con, widths_b[[k]])
+            heights_b_con <- c(heights_b_con, heights_b[[k]])
+
+            test_b <- c(test_b, box_plots$plot_list[[k]])
+            test[[k]] <- wrap_plots(box_plots$plot_list[[k]], ncol = wrap_point)
+            heights[k] <- ceiling(length(box_plots$plot_list[[k]]) / wrap_point)
+        }
+    }
+
+    patchwork_nrows <- ceiling(length(test_b) / wrap_point)
+    patchwork_area <- ceiling(sqrt(length(test_b))) # ?????????????????
+
+    # dark magic
+    design_mat <- patchwork::area()
+    base <- 0
+    for (i in seq_along(test_b)) {
+        col <- mod(i - 1, wrap_point) + 1
+        row <- ceiling(i / wrap_point)
+
+        design_mat <- c(design_mat, area(t = base + row, b = base + row, l = col, r = col))
+    }
+
+    test_multi <- wrap_plots(test_b, ncol = wrap_point, heights = heights_b_con)
+
+    patchwork_nrows <- ceiling(length(test_b) / wrap_point)
+    test_multi_with_wilcox <- test_multi + wilcox_plot_env$p + plot_layout(design = c(
+        design_mat,
+        area(t = 1, b = 3, l = 2, r = 5)
+    ))
+
+    # test_multi <- wrap_plots(test, ncol = 1, heights = heights) + plot_annotation(tag_levels = list(names(test)))
+    # test_2 <- wilcox_plot_env$p / test_all
+    pdf_and_png(test_multi_with_wilcox, output_expr, "wrapped_cd8_test", pdfWidth = 3 * W_FULL, pdfHeight = H_FULL * patchwork_nrows / 2, scale = 3)
+
+    test_multi_with_wilcox_free <- test_multi + free(wilcox_plot_env$p) + plot_layout(design = c(
+        design_mat,
+        area(t = 1, b = 3, l = 2, r = 5)
+    ))
+
+    pdf_and_png(test_multi_with_wilcox_free, output_expr, paste0("wrapped_free_", file_name_list[[idx_name]], ".pdf"), pdfWidth = 3 * W_FULL, pdfHeight = H_FULL * row / 2, scale = 3)
+}
+```
+
+
+
+### Major CellTypes
+
+```{r}
+Idents(baseline) <- baseline@meta.data[, "lineage_group"]
+#  baseline$pfs_risk <- paste0(baseline$pfs_risk, "_", baseline$davies_based_risk)
+
+counts <- table(baseline$public_id, baseline@meta.data[, "lineage_group"])
+
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, progression_group, Batch, siteXbatch, Study_Site, Batch, davies_based_risk, d_pt_race_1)
+md_bl$pfs_risk <- paste0(md_bl$progression_group, md_bl$davies_based_risk)
+md_bl <- md_bl |> dplyr::mutate(pfs_risk = dplyr::case_when(
+    pfs_risk == "NPstandard_risk" ~ "NP.SR",
+    pfs_risk == "RPstandard_risk" ~ "RP.SR",
+    .default = pfs_risk
+))
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+
+cluster_md <- baseline@meta.data |> dplyr::distinct(lineage_group)
+cluster_md$cluster <- cluster_md$lineage_group
+counts <- counts |> dplyr::left_join(cluster_md, by = "cluster")
+
+types_list <- list(
+    "CD3+ Cells" = c("CD8", "CD4"),
+    "Immune" = c("CD8", "CD4", "M", "B", "Other", "Nk"),
+    "Non-Malignant" = c("CD8", "CD4", "M", "B", "Other", "Nk", "E"),
+    "All" = c("CD8", "CD4", "M", "B", "Other", "Nk", "P", "E")
+)
+file_name_list <- list(
+    "CD3+ Cells" = "LINEAGE_GROUP_cd3_only",
+    "Immune" = "LINEAGE_GROUP_immune_only",
+    "Non-Malignant" = "LINEAGE_GROUP_All_NoPlasma",
+    "All" = "LINEAGE_GROUP_all_cells"
+)
+
+for (idx_name in names(types_list)) {
+    all_cells <- new.env()
+
+    all_cells$counts <- counts |> dplyr::filter(lineage_group %in% types_list[[idx_name]])
+    all_cells$outs <- quickWilcoxAndPlots(all_cells$counts, "pfs_risk", "RP.SR", "NP.SR")
+    all_cells$cluster_size <- all_cells$outs$counts_with_props |>
+        group_by(lineage_group) |>
+        dplyr::summarise(sum = sum(Counts))
+
+    all_cells$cluster_md <- cluster_md
+    all_cells$cluster_md$subcluster_V03072023 <- all_cells$cluster_md$cluster
+
+    all_cells$outs$wilcox_out <- dplyr::left_join(all_cells$outs$wilcox_out, all_cells$cluster_md, by = "cluster")
+    all_cells$outs$wilcox_out_select <- all_cells$outs$wilcox_out |> dplyr::select(cluster, mean_A, mean_B, fold_change, fold_change_for_display, p, padj, group1, group2)
+
+    all_cells$counts_plotting <- all_cells$outs$counts_with_props
+    all_cells$counts_plotting <- all_cells$counts_plotting |> dplyr::left_join(all_cells$cluster_size, "lineage_group")
+    all_cells$counts_plotting <- all_cells$counts_plotting |> dplyr::left_join(all_cells$outs$wilcox_out_select, "cluster")
+
+
+    wilcox_plot_env <- new.env()
+    wilcox_plot_env$wilcox_out <- all_cells$outs$wilcox_out
+    wilcox_plot_env$wilcox_out <- wilcox_plot_env$wilcox_out |> dplyr::mutate(fold_change = dplyr::case_when(
+        fold_change > 2^2.5 ~ 2^2.5,
+        fold_change < 2^-2.5 ~ 2^-2.5,
+        .default = fold_change
+    ))
+    wilcox_plot_env$wilcox_out$direction <- factor(wilcox_plot_env$wilcox_out$direction, levels = c("NP.SR (SIG)", "NP.SR", "RP.SR (SIG)", "RP.SR"))
+    x_max_range <- max(abs(wilcox_plot_env$wilcox_out$rank_biserial))
+
+    wilcox_plot_env$p <- ggplot(wilcox_plot_env$wilcox_out) +
+        geom_point(aes(x = rank_biserial, y = -log10(p + 1e-200), fill = direction, color = direction, alpha = 0.5), show.legend = F) +
+        geom_vline(xintercept = 0, color = "black", size = 1) +
+        geom_hline(yintercept = -log10(0.05 + 1e-200), color = "black", size = 1) +
+        geom_label_repel(aes(x = rank_biserial, y = -log10(p + 1e-200), label = lineage_group, fill = direction), color = "white", max.overlaps = 15, segment.colour = "black") +
+        xlim(-x_max_range, x_max_range) +
+        ggtitle(paste0("Differential Abundance, ", idx_name)) +
+        theme_prism()
+
+    wilcox_plot_env$annotations <- data.frame(
+        xpos = c(-Inf, Inf),
+        ypos = c(Inf, Inf),
+        annotateText = c(
+            "NP.SR Enriched",
+            "RP.SR Enriched"
+        ),
+        hjustvar = c(-.05, 1),
+        vjustvar = c(1, 1)
+    )
+
+    wilcox_plot_env$p <- wilcox_plot_env$p +
+        scale_fill_manual(values = floral_fill_theme, breaks = names(floral_fill_theme), labels = c("NP.SR*", "NP.SR", "RP.SR*", "RP.SR")) +
+        scale_color_manual(values = floral_color_theme) +
+        xlab("Rank-Biserial Correlation") +
+        ylab("-log10 P Value") +
+        ggtitle(paste0("Differential Abundance, ", idx_name)) +
+        geom_text(data = wilcox_plot_env$annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), size = 6)
+
+    box_plots <- new.env()
+    box_plots$data <- all_cells$counts_plotting |> dplyr::filter(pfs_risk %in% c("NP.SR", "RP.SR"))
+
+    box_plots$data <- box_plots$data |> dplyr::arrange(lineage_group, desc(sum))
+
+    box_plots$panels <- unique(box_plots$data$cluster)
+
+    box_plots$plot_list <- list()
+    box_plots$plot_list_bar <- list()
+
+    box_plots$per_clust_max <- box_plots$data |>
+        dplyr::group_by(cluster, pfs_risk) |>
+        dplyr::summarise(Q1 = quantile(prop, 0.25), Q3 = quantile(prop, 0.75), IQR = Q3 - Q1, upper = min(max(prop), Q3 + 1.5 * IQR), lower = max(min(prop), Q1 - 1.5 * IQR)) |>
+        dplyr::group_by(cluster) |>
+        dplyr::summarise(lower_min = min(lower), upper_max = max(upper), IQR_max = max(IQR), y.position = upper_max + 0.5 * IQR_max, y.position.alt = upper_max + 0.2 * IQR_max)
+
+    box_plots$per_clust_max <- box_plots$per_clust_max |> dplyr::mutate(
+        y.position = dplyr::case_when(
+            y.position == 0 ~ 0.001,
+            .default = y.position
+        ),
+        y.position.alt = dplyr::case_when(
+            y.position.alt == 0 ~ 0.001,
+            .default = y.position.alt
+        )
+    )
+
+    box_plots$data <- box_plots$data |> dplyr::left_join(box_plots$per_clust_max, by = "cluster")
+
+
+    grouping_var <- "pfs_risk"
+    wrap_point <- 6
+
+    custom_lin_group_order <- c("ALL CLUSTERS") # unique(all_cells$counts$lineage_group)
+    for (k in custom_lin_group_order) {
+        box_plots$panels_select <- box_plots$data |>
+            # dplyr::filter(lineage_group == k) |>
+            dplyr::distinct(cluster)
+
+        box_plots$panels_select <- box_plots$panels_select[["cluster"]]
+
+        box_plots$plot_list[[k]] <- list()
+
+        for (i in box_plots$panels_select) {
+            box_plots$tmp <- box_plots$data |> dplyr::filter(cluster == i)
+            box_plots$tmp[[grouping_var]] <- factor(box_plots$tmp[[grouping_var]], levels = c("NP.SR", "RP.SR"))
+
+            box_plots$tmp_distinct <- box_plots$tmp |> dplyr::distinct(cluster, p, y.position, y.position.alt, cluster_size, lineage_group, group1, group2)
+
+
+            box_plots$plot_list[[k]][[i]] <- ggplot(box_plots$tmp) +
+                geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+                geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+                stat_pvalue_manual(box_plots$tmp_distinct, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+                theme_prism() +
+                ylim(c(0, box_plots$tmp_distinct$y.position)) +
+                scale_fill_manual(values = fill_theme_binary) +
+                scale_color_manual(values = color_theme_binary) +
+                theme(axis.title.x = element_blank()) +
+                ylab(bquote(atop("Proportion", "of " ~ .(idx_name) ~ " Cells"))) +
+                NoLegend() +
+                coord_cartesian(clip = "off") +
+                theme(axis.title.x = element_blank()) +
+                ggtitle(box_plots$tmp_distinct$lineage_group) +
+                theme(plot.title = element_text(size = 14, face = "bold"))
+        }
+    }
+
+    test <- list()
+    test_b <- list()
+    heights <- c()
+    heights_b <- list()
+    widths_b <- list()
+
+    heights_b_con <- c()
+    widths_b_con <- c()
+
+    for (i in 1:(4 * wrap_point)) {
+        test_b[[i]] <- plot_spacer()
+    }
+    # Use the Design matrix to add gaps in the plot
+    for (k in custom_lin_group_order) {
+        for (i in seq_along(box_plots$plot_list[[k]])) {
+            if (mod(i - 1, wrap_point) != 0) {
+                box_plots$plot_list[[k]][[i]] <- box_plots$plot_list[[k]][[i]] + theme(axis.title.y = element_blank())
+            }
+        }
+        numPlots <- length(box_plots$plot_list[[k]])
+        if (numPlots > 0) {
+            if (mod(numPlots, wrap_point) != 0) {
+                idx <- 1
+                for (i in (mod(numPlots, wrap_point) + 1):wrap_point) {
+                    box_plots$plot_list[[k]][[numPlots + idx]] <- plot_spacer()
+                    idx <- idx + 1
+                }
+            }
+            updated_size <- length(box_plots$plot_list[[k]])
+            for (i in 1:6) {
+                box_plots$plot_list[[k]][[updated_size + i]] <- plot_spacer()
+            }
+            widths_b[[k]] <- rep(1.0, length(box_plots$plot_list[[k]]))
+            heights_b[[k]] <- rep(1.0, length(box_plots$plot_list[[k]]))
+
+            widths_b_con <- c(widths_b_con, widths_b[[k]])
+            heights_b_con <- c(heights_b_con, heights_b[[k]])
+
+            test_b <- c(test_b, box_plots$plot_list[[k]])
+            test[[k]] <- wrap_plots(box_plots$plot_list[[k]], ncol = wrap_point)
+            heights[k] <- ceiling(length(box_plots$plot_list[[k]]) / wrap_point)
+        }
+    }
+
+    patchwork_nrows <- ceiling(length(test_b) / wrap_point)
+    patchwork_area <- ceiling(sqrt(length(test_b))) # ?????????????????
+
+    # dark magic
+    design_mat <- patchwork::area()
+    base <- 0
+    for (i in seq_along(test_b)) {
+        col <- mod(i - 1, wrap_point) + 1
+        row <- ceiling(i / wrap_point)
+
+        design_mat <- c(design_mat, area(t = base + row, b = base + row, l = col, r = col))
+    }
+
+    test_multi <- wrap_plots(test_b, ncol = wrap_point, heights = heights_b_con)
+
+    patchwork_nrows <- ceiling(length(test_b) / wrap_point)
+    test_multi_with_wilcox <- test_multi + wilcox_plot_env$p + plot_layout(design = c(
+        design_mat,
+        area(t = 1, b = 3, l = 2, r = 5)
+    ))
+
+    # test_multi <- wrap_plots(test, ncol = 1, heights = heights) + plot_annotation(tag_levels = list(names(test)))
+    # test_2 <- wilcox_plot_env$p / test_all
+    pdf_and_png(test_multi_with_wilcox, output_expr, "wrapped_cd8_test", pdfWidth = 3 * W_FULL, pdfHeight = H_FULL * patchwork_nrows / 2, scale = 3)
+
+    test_multi_with_wilcox_free <- test_multi + free(wilcox_plot_env$p) + plot_layout(design = c(
+        design_mat,
+        area(t = 1, b = 3, l = 2, r = 5)
+    ))
+
+    pdf_and_png(test_multi_with_wilcox_free, output_expr, paste0("wrapped_free_", file_name_list[[idx_name]], ".pdf"), pdfWidth = 3 * W_FULL, pdfHeight = H_FULL * row / 2, scale = 3)
+}
+```
+
+
+## Setup Categories 
+
+# Flag CD45 Positive/Immune Populations
+```{r}
+
+```

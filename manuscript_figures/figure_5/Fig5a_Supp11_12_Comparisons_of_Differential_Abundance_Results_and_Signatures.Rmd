@@ -1,0 +1,764 @@
+---
+title: "Figure 5A - Cluster Abundance Correlations, Comparisons of Differential Abundance Data"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+Visualizes the differential abundance differences between RP and NP, HR and SR, and RP.SR and NP.SR using adjusted log2FC coefficients from a dirichlet model.
+
+Contains code for Figure 5a (Comparison of HR_v_SR, RP_v_NP, and Standard Risk RP_v_NP, along with various cell signatures), Supplemental Figure 12 (Comparison of major cell type lineage abundances), and Supplemental Figure 11 (Impact of subsetting NP and RP by triplet therapy on resulting analysis)
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Loading Data and Setting Up Options
+```{r init}
+source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+
+output_corr <- file.path(output_F3, "cluster_correlations", "EXPERIMENTAL", "DiriReg")
+dir.create(output_corr, recursive = T, showWarnings = F)
+
+REMOVE_PLASMA <- T
+GROUPING_MODE <- "LINEAGE" # "SUPERCLUST"
+str_mod <- ""
+if (REMOVE_PLASMA) {
+    str_mod <- paste0(str_mod, "_NOPLASMA")
+}
+str_mod <- paste0(str_mod, "_", GROUPING_MODE)
+```
+
+# Setup counts object
+```{r}
+baseline <- merged |> subset(VJ_INTERVAL == "Baseline" & lineage_group != "LQ")
+if (REMOVE_PLASMA) {
+    baseline <- baseline |> subset(lineage_group != "P")
+}
+clust_info <- baseline@meta.data |> dplyr::distinct(subcluster_V03072023, cellID_short, lineage_group, lineage_order)
+rm(merged)
+Idents(baseline) <- baseline@meta.data[, cluster_group]
+
+#  baseline$pfs_risk <- paste0(baseline$progression_group, "_", baseline$davies_based_risk)
+
+counts <- table(baseline$public_id, baseline@meta.data[, cluster_group])
+baseline@meta.data$lineage_group <- baseline@meta.data$lineage_group |> droplevels()
+counts_lg <- table(baseline$public_id, baseline@meta.data[, "lineage_group"])
+convert_to_proportion <- function(counts) {
+    counts <- counts / rowSums(counts)
+}
+
+join_md <- function(counts, md) {
+    counts$public_id <- rownames(counts)
+    dplyr::inner_join(md, counts, by = "public_id")
+}
+```
+
+# VST for proportion data for correlation of abundances
+```{r}
+transformProp <- function(tab,
+                          transform = NULL) {
+    if (is.null(transform)) transform <- "logit"
+
+    props <- tab / rowSums(tab)
+    if (transform == "asin") {
+        message("Performing arcsin square root transformation of proportions")
+        prop.trans <- asin(sqrt(props))
+    } else if (transform == "logit") {
+        message("Performing logit transformation of proportions")
+        props.pseudo <- (tab + 0.5) / rowSums(tab + 0.5)
+        prop.trans <- log(props.pseudo / (1 - props.pseudo))
+    }
+    t(prop.trans)
+}
+```
+
+# Cluster Co-occurences
+
+```{r}
+library(corrplot)
+test_corr_clust <- counts |>
+    t() |>
+    transformProp()
+
+test_corr_clust_lg <- counts_lg |>
+    t() |>
+    transformProp()
+
+corr_cluster <- cor(test_corr_clust, method = "pearson")
+corr_cluster_lg <- cor(test_corr_clust_lg, method = "pearson")
+
+library(ppcor)
+library(caret)
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, Study_Site, Batch)
+rownames(md_bl) <- md_bl$public_id
+
+
+# For batch effect - just look at patient correlation...
+
+
+
+corrplot_data <- corrplot(corr_cluster, method = "shade", type = "full", order = "hclust", tl.col = "black", tl.srt = 45)
+
+corrplot(corr_cluster, method = "shade", type = "full", order = "hclust", tl.col = "black", tl.srt = 45)
+grid.echo()
+p <- grid.grab()
+pdf_and_png(p, output_corr, "cluster_corr_baseline_subclust", pdfWidth = 25, pdfHeight = 20)
+
+corrplot_data_lg <- corrplot(corr_cluster_lg, method = "shade", type = "full", order = "hclust", tl.col = "black", tl.srt = 45)
+
+corrplot(corr_cluster_lg, method = "shade", type = "full", order = "hclust", tl.col = "black", tl.srt = 45)
+grid.echo()
+p <- grid.grab()
+pdf_and_png(p, output_corr, paste0("cluster_corr_baseline_lingroup", str_mod), pdfWidth = 12, pdfHeight = 12)
+
+
+# corr_patient <- cor(t(test_corr_clust), method = "pearson")
+# corrplot(corr_patient, method = "shade", type = "full", order = "hclust", tl.col = "black", tl.srt = 45)
+# grid.echo()
+# p <- grid.grab()
+# pdf_and_png(p, output_corr, "patient_corr_baseline_cidshort", pdfWidth = 25, pdfHeight = 20)
+```
+
+```{r}
+# Recreates hclust
+clust_results <- hclust(as.dist(1 - corr_cluster), method = "complete")
+superclust <- cutree(clust_results, k = 16)
+ordcol <- clust_results$order
+colnames(corr_cluster)[ordcol]
+
+clust_results_noplasma <- hclust(as.dist(1 - corr_cluster), method = "complete")
+superclust_noplasma <- cutree(clust_results_noplasma, k = 14)
+```
+
+
+# Setup dataframe for 5a, Supplemental 12, Supplemental 11
+
+```{r}
+mdbl <- dplyr::distinct(baseline@meta.data, public_id, davies_based_risk, progression_group, siteXbatch, treatment_simple, Study_Site, Batch)
+
+mdbl$pfs_risk <- paste0(mdbl$progression_group, "_", mdbl$davies_based_risk)
+
+mdbl <- mdbl |> dplyr::mutate(pfs_risk = dplyr::case_when(
+    pfs_risk == "NP_standard_risk" ~ "NP.SR",
+    pfs_risk == "RP_standard_risk" ~ "RP.SR",
+    pfs_risk == "P_standard_risk" ~ "Prog.SR",
+    pfs_risk == "P_high_risk" ~ "Prog.HR",
+    pfs_risk == "NP_high_risk" ~ "NP.HR",
+    pfs_risk == "RP_high_risk" ~ "RP.HR",
+    .default = pfs_risk
+))
+
+mdbl$pfs_therapy <- paste0(mdbl$progression_group, "_", mdbl$treatment_simple)
+
+mdbl <- mdbl |> dplyr::mutate(pfs_therapy = dplyr::case_when(
+    pfs_therapy == "NP_Triplet" ~ "NP.T",
+    pfs_therapy == "RP_Triplet" ~ "RP.T",
+    pfs_therapy == "P_Triplet" ~ "Prog.T",
+    pfs_therapy == "P_Doublet" ~ "Prog.D",
+    pfs_therapy == "NP_Doublet" ~ "NP.D",
+    pfs_therapy == "RP_Doublet" ~ "RP.D",
+    .default = pfs_therapy
+))
+```
+
+# While Dirichlet Regression can't be used to trivially get a p-value for progression (siteXbatch singleton subset to NP, RP - precision estimate for NP v RP largely different), we can get a Dirichlet estimated log2FC conditioned on equal sampling of siteXbatch that can be used to fairly compare to the HR v SR analysis
+Progressive patients including when fitting model for progression_group so that siteXbatch is non-singleton. Then, compute the per-cluster mean for each siteXbatch x target variable combo, take the average across sXbs, then take the ratio. 
+
+The P value computation using the full simulation is not fully validated - do not use
+```{r}
+library(betareg)
+
+cluster_ordering <- colnames(corrplot_data$corr)
+
+source("source/Helper_Functions/COMMON_diff_abundance_functions.R")
+
+# Equivalent to - Dirichlet, Alternative Parameterization, Binary. Coefficient is the Adjusted log-odds.
+betaReg_AllClusters <- function(counts, md, clusterlist, groupVar) {
+    prop <- counts / rowSums(counts)
+    empty_clusters <- colSums(counts) == 0
+    prop <- prop |> as.data.frame.matrix()
+    prop <- prop + 0.000001
+    prop$public_id <- rownames(prop)
+
+    patRatios <- dplyr::left_join(md, prop)
+    breg_results <- c()
+    breg_mdl <- list()
+
+    for (i in clusterlist) {
+        if (empty_clusters[[i]]) {
+            breg_mdl[[i]] <- NULL
+            breg_results[[i]] <- 0
+        } else {
+            breg_mdl[[i]] <- betareg(as.formula(sprintf("%s ~ %s + siteXbatch | 1", i, groupVar)), data = patRatios)
+            breg_results[i] <- summary(breg_mdl[[i]])$coef$mean[2, 1]
+        }
+    }
+    return(list("models" = breg_mdl, "effect_sizes" = breg_results))
+}
+
+# Progression group, pfsXrisk - must include 'P' and "P.SR" as there are singleton siteXbatch covariates. Precision model unfittable.
+diriReg_AllClusters <- function(counts, md, variable_mode = "PFS", BC_mode = "siteXbatch") {
+    counts <- counts[md$public_id, ]
+    cluster_size <- colSums(counts)
+    counts <- counts |> as.data.frame()
+
+    colnames(counts) <- c("public_id", "cluster", "Counts")
+    counts <- counts |> dplyr::left_join(md, by = "public_id")
+    out <- cluster_dirichlet_test(counts, variable_mode = variable_mode, BC_mode = BC_mode, DO_SIMULATION_STEP = T, SIMULATION_OVERRIDE_RETURN_MEAN_ONLY = T)
+}
+```
+
+# Perform all the comparisons for 5a (and more)
+```{r}
+counts <- counts[mdbl$public_id, ]
+
+
+
+mdbl_nprp <- mdbl |> dplyr::filter(progression_group %in% c("NP", "P", "RP"))
+mdbl_nprp$progression_group <- factor(mdbl_nprp$progression_group, levels = c("NP", "P", "RP"))
+counts_nprp <- counts[mdbl_nprp$public_id, ]
+out_nprp <- diriReg_AllClusters(counts_nprp, md = mdbl_nprp, variable_mode = "PFS", BC_mode = "siteXbatch")
+
+mdbl_srhr <- mdbl |> dplyr::filter(davies_based_risk %in% c("high_risk", "standard_risk"))
+mdbl_srhr$davies_based_risk <- factor(mdbl_srhr$davies_based_risk, levels = c("standard_risk", "high_risk"))
+counts_srhr <- counts[mdbl_srhr$public_id, ]
+out_srhr <- diriReg_AllClusters(counts_srhr, md = mdbl_srhr, variable_mode = "Risk", BC_mode = "siteXbatch")
+
+
+mdbl_SR_nprp <- mdbl |> dplyr::filter(pfs_risk %in% c("NP.SR", "RP.SR", "Prog.SR"))
+mdbl_SR_nprp$pfs_risk <- factor(mdbl_SR_nprp$pfs_risk, levels = c("NP.SR", "RP.SR", "Prog.SR"))
+counts_SR_nprp <- counts[mdbl_SR_nprp$public_id, ]
+out_SR_nprp <- diriReg_AllClusters(counts_SR_nprp, md = mdbl_SR_nprp, variable_mode = "pfs_risk_SR", BC_mode = "siteXbatch")
+# out_SR_nprp <- betaReg_AllClusters(counts_SR_nprp, mdbl_SR_nprp, cluster_ordering, groupVar = "pfs_risk")
+
+mdbl_HR_nprp <- mdbl |> dplyr::filter(pfs_risk %in% c("NP.HR", "RP.HR", "Prog.HR", "NP.SR", "RP.SR", "Prog.SR")) # can't fit model without SR patients due to singleton siteXbatch's
+mdbl_HR_nprp$pfs_risk <- factor(mdbl_HR_nprp$pfs_risk, levels = c("NP.HR", "RP.HR", "Prog.HR", "NP.SR", "RP.SR", "Prog.SR"))
+counts_HR_nprp <- counts[mdbl_HR_nprp$public_id, ]
+out_HR_nprp <- diriReg_AllClusters(counts_HR_nprp, md = mdbl_HR_nprp, variable_mode = "pfs_risk_HR", BC_mode = "siteXbatch")
+
+# mdbl_SRNP_HRRP_nprp <- mdbl |> dplyr::filter(pfs_risk %in% c("NP.SR", "RP.HR"))
+# mdbl_SRNP_HRRP_nprp$pfs_risk <- factor(mdbl_SRNP_HRRP_nprp$pfs_risk, levels = c("NP.SR", "RP.HR"))
+# counts_SRNP_HRRP_nprp <- counts[mdbl_SRNP_HRRP_nprp$public_id, ]
+# out_SRNP_HRRP_nprp <- betaReg_AllClusters(counts_SRNP_HRRP_nprp, mdbl_SRNP_HRRP_nprp, cluster_ordering, groupVar = "pfs_risk")
+
+# mdbl_HRNP_SRR_nprp <- mdbl |> dplyr::filter(pfs_risk %in% c("NP.HR", "RP.SR"))
+# mdbl_HRNP_SRR_nprp$pfs_risk <- factor(mdbl_HRNP_SRR_nprp$pfs_risk, levels = c("NP.HR", "RP.SR"))
+# counts_HRNP_SRR_nprp <- counts[mdbl_HRNP_SRR_nprp$public_id, ]
+# out_HRNP_SRR_nprp <- betaReg_AllClusters(counts_HRNP_SRR_nprp, mdbl_HRNP_SRR_nprp, cluster_ordering, groupVar = "pfs_risk")
+
+
+mdbl_T_nprp <- mdbl |> dplyr::filter(pfs_therapy %in% c("NP.T", "RP.T", "Prog.T", "NP.D", "RP.D", "Prog.D"))
+mdbl_T_nprp$pfs_therapy <- factor(mdbl_T_nprp$pfs_therapy, levels = c("NP.T", "RP.T", "Prog.T", "NP.D", "RP.D", "Prog.D"))
+counts_T_nprp <- counts[mdbl_T_nprp$public_id, ]
+out_T_nprp <- diriReg_AllClusters(counts_T_nprp, md = mdbl_T_nprp, variable_mode = "pfs_Therapy_T", BC_mode = "siteXbatch")
+
+
+mdbl_D_nprp <- mdbl |> dplyr::filter(pfs_therapy %in% c("NP.T", "RP.T", "Prog.T", "NP.D", "RP.D", "Prog.D"))
+mdbl_D_nprp$pfs_therapy <- factor(mdbl_D_nprp$pfs_therapy, levels = c("NP.D", "RP.D", "Prog.D", "NP.T", "RP.T", "Prog.T"))
+counts_D_nprp <- counts[mdbl_D_nprp$public_id, ]
+out_D_nprp <- diriReg_AllClusters(counts_D_nprp, md = mdbl_D_nprp, variable_mode = "pfs_Therapy_D", BC_mode = "siteXbatch")
+```
+
+# Perform all the comparisons for Supplemental Figure 12 (and more)
+```{r}
+counts_lg <- counts_lg[mdbl$public_id, ]
+LG <- new.env()
+
+LG$cluster_ordering <- colnames(corrplot_data_lg$corr)
+
+LG$counts_nprp <- counts_lg[mdbl_nprp$public_id, ]
+LG$out_nprp <- diriReg_AllClusters(LG$counts_nprp, md = mdbl_nprp, variable_mode = "PFS", BC_mode = "siteXbatch")
+
+LG$counts_srhr <- counts_lg[mdbl_srhr$public_id, ]
+LG$out_srhr <- diriReg_AllClusters(LG$counts_srhr, md = mdbl_srhr, variable_mode = "Risk", BC_mode = "siteXbatch")
+
+LG$counts_SR_nprp <- counts_lg[mdbl_SR_nprp$public_id, ]
+LG$out_SR_nprp <- diriReg_AllClusters(LG$counts_SR_nprp, md = mdbl_SR_nprp, variable_mode = "pfs_risk_SR", BC_mode = "siteXbatch")
+
+LG$counts_HR_nprp <- counts_lg[mdbl_HR_nprp$public_id, ]
+LG$out_HR_nprp <- diriReg_AllClusters(LG$counts_HR_nprp, md = mdbl_HR_nprp, variable_mode = "pfs_risk_HR", BC_mode = "siteXbatch")
+
+# LG$counts_SRNP_HRRP_nprp <- counts_lg[mdbl_SRNP_HRRP_nprp$public_id, ]
+# LG$out_SRNP_HRRP_nprp <- betaReg_AllClusters(LG$counts_SRNP_HRRP_nprp, mdbl_SRNP_HRRP_nprp, LG$cluster_ordering, groupVar = "pfs_risk")
+
+# LG$counts_HRNP_SRR_nprp <- counts_lg[mdbl_HRNP_SRR_nprp$public_id, ]
+# LG$out_HRNP_SRR_nprp <- betaReg_AllClusters(LG$counts_HRNP_SRR_nprp, mdbl_HRNP_SRR_nprp, LG$cluster_ordering, groupVar = "pfs_risk")
+
+LG$counts_T_nprp <- counts_lg[mdbl_T_nprp$public_id, ]
+LG$out_T_nprp <- diriReg_AllClusters(LG$counts_T_nprp, md = mdbl_T_nprp, variable_mode = "pfs_Therapy_T", BC_mode = "siteXbatch")
+
+LG$counts_D_nprp <- counts_lg[mdbl_D_nprp$public_id, ]
+LG$out_D_nprp <- diriReg_AllClusters(LG$counts_D_nprp, md = mdbl_D_nprp, variable_mode = "pfs_Therapy_D", BC_mode = "siteXbatch")
+```
+
+Format data frame
+```{r}
+# cluster_ordering <- names(out_nprp$simulation_out$average_log2FC)
+diff_abun_df <- data.frame("subcluster_V03072023" = names(out_nprp$simulation_out$average_log2FC), "RP_v_NP" = -out_nprp$simulation_out$average_log2FC, "HR_v_SR" = -out_srhr$simulation_out$average_log2FC, "RP.SR_v_NP.SR" = -out_SR_nprp$simulation_out$average_log2FC, "RP.HR_v_NP.HR" = -out_HR_nprp$simulation_out$average_log2FC, "RP.T_v_NP.T" = -out_T_nprp$simulation_out$average_log2FC, "RP.D_v_NP.D" = -out_D_nprp$simulation_out$average_log2FC) # "RP.HR_v_NP.SR" = out_SRNP_HRRP_nprp$effect_sizes, "RP.SR_v_NP.HR" = out_HRNP_SRR_nprp$effect_sizes,
+LG$diff_abun_df <- data.frame("lineage_group" = names(LG$out_nprp$simulation_out$average_log2FC), "RP_v_NP" = -LG$out_nprp$simulation_out$average_log2FC, "HR_v_SR" = -LG$out_srhr$simulation_out$average_log2FC, "RP.SR_v_NP.SR" = -LG$out_SR_nprp$simulation_out$average_log2FC, "RP.HR_v_NP.HR" = -LG$out_HR_nprp$simulation_out$average_log2FC, "RP.T_v_NP.T" = -LG$out_T_nprp$simulation_out$average_log2FC, "RP.D_v_NP.D" = -LG$out_D_nprp$simulation_out$average_log2FC) # "RP.HR_v_NP.SR" = LG$out_SRNP_HRRP_nprp$effect_sizes, "RP.SR_v_NP.HR" = LG$out_HRNP_SRR_nprp$effect_sizes,
+
+cluster_info <- dplyr::distinct(baseline@meta.data, !!sym(cluster_group), cellID_short, lineage_group, lineage_order)
+
+diff_abun_df <- dplyr::left_join(diff_abun_df, cluster_info)
+diff_abun_df$cellID_short <- factor(diff_abun_df$cellID_short, levels = diff_abun_df$cellID_short)
+```
+
+```{r}
+diff_abun_df <- diff_abun_df |> gather(Comparison, logFC, -cellID_short, -lineage_group, -lineage_order, -subcluster_V03072023)
+
+LG$diff_abun_df <- LG$diff_abun_df |> gather(Comparison, logFC, -lineage_group)
+if (GROUPING_MODE == "LINEAGE") {
+    LG$diff_abun_df$lineage_group <- factor(LG$diff_abun_df$lineage_group, levels = levels(baseline$lineage_group))
+} else if (GROUPING_MODE == "SUPERCLUST") {
+    LG$diff_abun_df$lineage_group <- factor(LG$diff_abun_df$lineage_group, levels = LG$cluster_ordering)
+}
+```
+
+# Compute Signatures defined in Supplemental Table 4
+
+```{r}
+library(UCell)
+# senMayo <- c("ACVR1B", "ANG", "ANGPT1", "ANGPTL4", "AREG", "AXL", "BEX3", "BMP2", "BMP6", "C3", "CCL1", "CCL13", "CCL16", "CCL2", "CCL20", "CCL24", "CCL26", "CCL3", "CCL3L1", "CCL4", "CCL5", "CCL7", "CCL8", "CD55", "CD9", "CSF1", "CSF2", "CSF2RB", "CST4", "CTNNB1", "CTSB", "CXCL1", "CXCL10", "CXCL12", "CXCL16", "CXCL2", "CXCL3", "CXCL8", "CXCR2", "DKK1", "EDN1", "EGF", "EGFR", "EREG", "ESM1", "ETS2", "FAS", "FGF1", "FGF2", "FGF7", "GDF15", "GEM", "GMFG", "HGF", "HMGB1", "ICAM1", "ICAM3", "IGF1", "IGFBP1", "IGFBP2", "IGFBP3", "IGFBP4", "IGFBP5", "IGFBP6", "IGFBP7", "IL10", "IL13", "IL15", "IL18", "IL1A", "IL1B", "IL2", "IL32", "IL6", "IL6ST", "IL7", "INHA", "IQGAP2", "ITGA2", "ITPKA", "JUN", "KITLG", "LCP1", "MIF", "MMP1", "MMP10", "MMP12", "MMP13", "MMP14", "MMP2", "MMP3", "MMP9", "NAP1L4", "NRG1", "PAPPA", "PECAM1", "PGF", "PIGF", "PLAT", "PLAU", "PLAUR", "PTBP1", "PTGER2", "PTGES", "RPS6KA5", "SCAMP4", "SELPLG", "SEMA3F", "SERPINB4", "SERPINE1", "SERPINE2", "SPP1", "SPX", "TIMP2", "TNF", "TNFRSF10C", "TNFRSF11B", "TNFRSF1A", "TNFRSF1B", "TUBGCP2", "VEGFA", "VEGFC", "VGF", "WNT16", "WNT2")
+#    "SASP" = c("CXCL8", "IL1B", "CCL4", "CCL3"),
+
+signature_list <- list(
+    "Dysfunctional" = c("B3GAT1", "ZEB2", "KLRG1", "KLRK1", "TIGIT", "LAG3", "PDCD1", "CTLA4", "HAVCR2"),
+    "IFN" = c("IFI6", "IFI30", "IFITM3", "IFI44L", "IFITM2", "S100A4", "IFI16", "ISG15", "STAT1", "IFI44", "STAT2", "APOL6", "IFIT3", "IFI35", "IFIT2", "JAK2", "IFI27L2", "GBP1", "GBP2", "IFIT1", "IFIH1", "IFITM1", "GBP4", "IFI27", "ISG15", "MX1", "OAS1", "XAF1", "APOL3", "IFIT5", "IFNG"),
+    "HLA" = c("HLA-DRA", "CD74", "HLA-DRB1", "CD52", "HLA-DPB1", "HLA-DPA1", "HLA-DRB5", "HLA-DQB1", "HLA-DMA", "HLA-DQA1", "HLA-DOA"),
+    "SASP" = c("ACVR1B", "ANG", "ANGPT1", "ANGPTL4", "AREG", "AXL", "BEX3", "BMP2", "BMP6", "C3", "CCL1", "CCL13", "CCL16", "CCL2", "CCL20", "CCL24", "CCL26", "CCL3", "CCL3L1", "CCL4", "CCL5", "CCL7", "CCL8", "CD55", "CD9", "CSF1", "CSF2", "CSF2RB", "CST4", "CTNNB1", "CTSB", "CXCL1", "CXCL10", "CXCL12", "CXCL16", "CXCL2", "CXCL3", "CXCL8", "CXCR2", "DKK1", "EDN1", "EGF", "EGFR", "EREG", "ESM1", "ETS2", "FAS", "FGF1", "FGF2", "FGF7", "GDF15", "GEM", "GMFG", "HGF", "HMGB1", "ICAM1", "ICAM3", "IGF1", "IGFBP1", "IGFBP2", "IGFBP3", "IGFBP4", "IGFBP5", "IGFBP6", "IGFBP7", "IL10", "IL13", "IL15", "IL18", "IL1A", "IL1B", "IL2", "IL32", "IL6", "IL6ST", "IL7", "INHA", "IQGAP2", "ITGA2", "ITPKA", "JUN", "KITLG", "LCP1", "MIF", "MMP1", "MMP10", "MMP12", "MMP13", "MMP14", "MMP2", "MMP3", "MMP9", "NAP1L4", "NRG1", "PAPPA", "PECAM1", "PGF", "PIGF", "PLAT", "PLAU", "PLAUR", "PTBP1", "PTGER2", "PTGES", "RPS6KA5", "SCAMP4", "SELPLG", "SEMA3F", "SERPINB4", "SERPINE1", "SERPINE2", "SPP1", "SPX", "TIMP2", "TNF", "TNFRSF10C", "TNFRSF11B", "TNFRSF1A", "TNFRSF1B", "TUBGCP2", "VEGFA", "VEGFC", "VGF", "WNT16", "WNT2"),
+    "Naive" = c("IL7R", "CCR7", "SELL", "FOXO1", "KLF2", "KLF3", "LEF1", "TCF7", "ACTN1", "FOXP1", "BTG1", "BTG2", "TOB1", "FOXO1"),
+    "Cytotoxic" = c("GZMA", "GZMB", "GZMH", "GZMK", "GZMH", "GNLY", "PRF1", "IFNG", "TNF", "SERPINB1", "SERPINB6", "SERPINB9", "CTSA", "CTSB", "CTSC", "CTSD", "CTSW", "CST3", "CST7", "CSTB", "LAMP1", "LAMP3", "CAPN2", "GZMM", "CTSH", "CAPN2", "PLEK"),
+    "Exhausted" = c("PDCD1", "LAYN", "HAVCR2", "LAG3", "CD244", "CTLA4", "LILRB1", "TIGIT", "TOX", "VSIR", "BTLA", "ENTPD1", "CD160", "LAIR1")
+)
+
+baseline <- AddModuleScore_UCell(baseline, features = signature_list, name = "")
+```
+
+## Compute a cluster average
+
+```{r}
+averageMod <- baseline@meta.data %>%
+    dplyr::group_by(subcluster_V03072023) %>%
+    dplyr::summarise(
+        "NaiveT" = mean(Naive),
+        "CytotoxicT" = mean(Cytotoxic),
+        "ExhaustedT" = mean(Exhausted),
+        "DysfunctionalT" = mean(Dysfunctional),
+        "SASP" = mean(SASP),
+        "IFN" = mean(IFN),
+        "HLA" = mean(HLA)
+    ) |>
+    gather(Module, Score, -subcluster_V03072023) |>
+    as.data.frame()
+
+diff_expr <- averageMod
+```
+
+More data frame manipulation
+```{r}
+diff_abun_df$subcluster_V03072023 <- factor(diff_abun_df$subcluster_V03072023)
+
+
+diff_abun_df$Comparison <- factor(diff_abun_df$Comparison, levels = rev(c("HR_v_SR", "RP_v_NP", "RP.SR_v_NP.SR", "RP.HR_v_NP.HR", "RP.T_v_NP.T", "RP.D_v_NP.D")))
+LG$diff_abun_df$Comparison <- factor(LG$diff_abun_df$Comparison, levels = rev(c("HR_v_SR", "RP_v_NP", "RP.SR_v_NP.SR", "RP.HR_v_NP.HR", "RP.T_v_NP.T", "RP.D_v_NP.D")))
+
+diff_expr <- dplyr::left_join(diff_expr, cluster_info)
+diff_expr$subcluster_V03072023 <- factor(diff_expr$subcluster_V03072023, levels = cluster_ordering)
+diff_expr <- diff_expr |> arrange(subcluster_V03072023)
+diff_expr$cellID_short <- factor(diff_expr$cellID_short, levels = unique(diff_expr$cellID_short))
+
+if (GROUPING_MODE == "SUPERCLUST") {
+    superclust_df <- data.frame(subcluster_V03072023 = names(superclust_noplasma), superclust = superclust_noplasma)
+} else if (GROUPING_MODE == "LINEAGE") {
+    superclust_df <- data.frame(subcluster_V03072023 = clust_info$subcluster_V03072023, superclust = clust_info$lineage_group)
+}
+diff_abun_df <- dplyr::left_join(diff_abun_df, superclust_df)
+diff_expr <- dplyr::left_join(diff_expr, superclust_df)
+```
+
+```{r}
+diff_abun_df <- diff_abun_df |> dplyr::filter(lineage_group != "E")
+diff_abun_df_all <- diff_abun_df
+```
+
+# Figure 5A and Supplemental Figure 12: Risk, Progression, Standard Risk Progression Comparison
+```{r}
+if (GROUPING_MODE == "LINEAGE") {
+    cluster_info <- cluster_info |> arrange(lineage_group, lineage_order)
+    diff_abun_df$cellID_short <- factor(diff_abun_df$cellID_short, levels = cluster_info$cellID_short)
+    diff_expr$cellID_short <- factor(diff_expr$cellID_short, levels = cluster_info$cellID_short)
+}
+
+
+diff_abun_df <- diff_abun_df |> dplyr::filter(Comparison %in% c("HR_v_SR", "RP_v_NP", "RP.SR_v_NP.SR")) # , "RP.HR_v_NP.HR", "RP.HR_v_NP.SR", "RP.SR_v_NP.HR"))
+LG$diff_abun_df <- LG$diff_abun_df |> dplyr::filter(Comparison %in% c("HR_v_SR", "RP_v_NP", "RP.SR_v_NP.SR")) # , "RP.HR_v_NP.HR", "RP.HR_v_NP.SR", "RP.SR_v_NP.HR"))
+
+diff_expr <- diff_expr |> dplyr::filter(lineage_group != "E")
+
+LG$p <- ggplot(LG$diff_abun_df) +
+    geom_tile(aes(x = lineage_group, y = Comparison, fill = logFC), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = fill_NP, # "#1d9ae3",
+        high = fill_RP, # "#f63575"
+        limits = c(-1.5, 1.5),
+        oob = squish
+    ) +
+    theme_prism() +
+    xlab("") +
+    ylab("") +
+    theme(axis.text.x = element_text(
+        angle = 90,
+        vjust = 0.5,
+        hjust = 1
+    )) +
+    coord_fixed() +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+
+p <- ggplot(diff_abun_df) +
+    geom_tile(aes(x = cellID_short, y = Comparison, fill = logFC), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = fill_NP, # "#1d9ae3",
+        high = fill_RP, # "#f63575"
+        limits = range(c(-1, 1)),
+        oob = squish
+    ) +
+    theme_prism() +
+    xlab("") +
+    ylab("") +
+    theme(axis.text.x = element_blank()) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    facet_grid(~superclust, scales = "free_x", space = "free_x")
+
+pdf_and_png(p, output_corr, paste0("test", str_mod), pdfWidth = 8.5, pdfHeight = 1.6, scale = 2)
+
+diff_abun_prog <- diff_abun_df |> dplyr::filter(Comparison %in% c("RP_v_NP", "RP.SR_v_NP.SR"))
+
+diff_abun_prog <- diff_abun_prog |> spread(Comparison, logFC)
+
+diff_abun_prog <- diff_abun_prog |> dplyr::mutate(direction = dplyr::case_when(
+    RP.SR_v_NP.SR > 0 & RP_v_NP > 0 ~ "RP Enriched Consistent",
+    RP.SR_v_NP.SR < 0 & RP_v_NP < 0 ~ "NP Enriched Consistent",
+    RP.SR_v_NP.SR > 0 & RP_v_NP < 0 ~ "NP Overall, RP Standard",
+    RP.SR_v_NP.SR < 0 & RP_v_NP > 0 ~ "NP Standard, RP Overall",
+    RP.SR_v_NP.SR == 0 & RP_v_NP > 0 ~ "RP Overall, NC Standard",
+    RP.SR_v_NP.SR == 0 & RP_v_NP < 0 ~ "NP Overall, NC Standard",
+    RP.SR_v_NP.SR > 0 & RP_v_NP == 0 ~ "RP Standard, NC Overall",
+    RP.SR_v_NP.SR < 0 & RP_v_NP == 0 ~ "NP Standard, NC Overall",
+    RP.SR_v_NP.SR == 0 & RP_v_NP == 0 ~ "NC",
+    .default = "UNKNOWN CASE"
+))
+
+p_scatter <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = RP.SR_v_NP.SR, y = RP_v_NP, fill = direction, color = direction)) +
+    geom_label_repel(aes(x = RP.SR_v_NP.SR, y = RP_v_NP, label = cellID_short, fill = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Adjusted Log2FC") +
+    ylab("RP v NP Adjusted Log2FC") +
+    coord_fixed()
+
+pdf_and_png(p_scatter, output_corr, paste0("SR_v_overall_scatter", str_mod), pdfWidth = 6, pdfHeight = 4, scale = 3)
+
+p_scatter_nolabel <- ggplot(diff_abun_prog, aes(x = RP.SR_v_NP.SR, y = RP_v_NP)) +
+    geom_smooth(method = "lm", formula = y ~ x, color = "darkgrey") +
+    geom_abline(slope = 1, intercept = 0, color = "grey") +
+    geom_point(aes(fill = direction, color = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Adjusted Log2FC") +
+    ylab("RP v NP Adjusted Log2FC") +
+    coord_fixed() +
+    NoLegend()
+
+pdf_and_png(p_scatter_nolabel, output_corr, paste0("SR_v_overall_scatter_nolabel", str_mod), pdfWidth = 1.5, pdfHeight = 1, scale = 3)
+
+
+diff_abun_prog <- diff_abun_df_all |> dplyr::filter(Comparison %in% c("RP.HR_v_NP.HR", "RP.SR_v_NP.SR"))
+
+diff_abun_prog <- diff_abun_prog |> spread(Comparison, logFC)
+
+diff_abun_prog <- diff_abun_prog |> dplyr::mutate(direction = dplyr::case_when(
+    RP.SR_v_NP.SR > 0 & RP.HR_v_NP.HR > 0 ~ "RP Enriched Consistent",
+    RP.SR_v_NP.SR < 0 & RP.HR_v_NP.HR < 0 ~ "NP Enriched Consistent",
+    RP.SR_v_NP.SR > 0 & RP.HR_v_NP.HR < 0 ~ "NP Overall, RP Standard",
+    RP.SR_v_NP.SR < 0 & RP.HR_v_NP.HR > 0 ~ "NP Standard, RP Overall",
+    RP.SR_v_NP.SR == 0 & RP.HR_v_NP.HR > 0 ~ "RP Overall, NC Standard",
+    RP.SR_v_NP.SR == 0 & RP.HR_v_NP.HR < 0 ~ "NP Overall, NC Standard",
+    RP.SR_v_NP.SR > 0 & RP.HR_v_NP.HR == 0 ~ "RP Standard, NC Overall",
+    RP.SR_v_NP.SR < 0 & RP.HR_v_NP.HR == 0 ~ "NP Standard, NC Overall",
+    RP.SR_v_NP.SR == 0 & RP.HR_v_NP.HR == 0 ~ "NC",
+    .default = "UNKNOWN CASE"
+))
+
+p_scatter <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = RP.SR_v_NP.SR, y = RP.HR_v_NP.HR, fill = direction, color = direction)) +
+    geom_label_repel(aes(x = RP.SR_v_NP.SR, y = RP.HR_v_NP.HR, label = cellID_short, fill = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Adjusted Log2FC") +
+    ylab("RP-HR v NP-HR Adjusted Log2FC") +
+    xlim(c(-1.5, 1.5)) +
+    ylim(c(-1.5, 1.5))
+
+pdf_and_png(p_scatter, output_corr, paste0("progression_SR_v_HR_scatter", str_mod), pdfWidth = 6, pdfHeight = 4, scale = 3)
+
+
+p_scatter_nolabel <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = RP.SR_v_NP.SR, y = RP.HR_v_NP.HR, fill = direction, color = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Adjusted Log2FC") +
+    ylab("RP v NP Adjusted Log2FC") +
+    xlim(c(-1.5, 1.5)) +
+    ylim(c(-1.5, 1.5))
+
+pdf_and_png(p_scatter_nolabel, output_corr, paste0("progression_SR_v_HR_scatter_nolabel", str_mod), pdfWidth = 3, pdfHeight = 2, scale = 3)
+
+diff_abun_prog <- diff_abun_df_all |> dplyr::filter(Comparison %in% c("RP_v_NP", "HR_v_SR"))
+
+diff_abun_prog <- diff_abun_prog |> spread(Comparison, logFC)
+
+diff_abun_prog <- diff_abun_prog |> dplyr::mutate(direction = dplyr::case_when(
+    HR_v_SR > 0 & RP_v_NP > 0 ~ "HR, RP",
+    HR_v_SR < 0 & RP_v_NP < 0 ~ "SR, NP",
+    HR_v_SR > 0 & RP_v_NP < 0 ~ "HR, NP",
+    HR_v_SR < 0 & RP_v_NP > 0 ~ "SR, RP",
+    HR_v_SR == 0 & RP_v_NP > 0 ~ "RP",
+    HR_v_SR == 0 & RP_v_NP < 0 ~ "NP",
+    HR_v_SR > 0 & RP_v_NP == 0 ~ "HR",
+    HR_v_SR < 0 & RP_v_NP == 0 ~ "SR",
+    HR_v_SR == 0 & RP_v_NP == 0 ~ "NC",
+    .default = "UNKNOWN CASE"
+))
+
+p_scatter <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = HR_v_SR, y = RP_v_NP, fill = direction, color = direction)) +
+    geom_label_repel(aes(x = HR_v_SR, y = RP_v_NP, label = cellID_short, fill = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Adjusted Log2FC") +
+    ylab("RP v NP Adjusted Log2FC") +
+    xlim(c(-1.5, 1.5)) +
+    ylim(c(-1.5, 1.5))
+
+pdf_and_png(p_scatter, output_corr, paste0("risk_vs_prog_scatter", str_mod), pdfWidth = 6, pdfHeight = 4, scale = 3)
+
+p_scatter_nolabel <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = HR_v_SR, y = RP_v_NP, fill = direction, color = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Log-Odds") +
+    ylab("RP v NP Log-Odds") +
+    xlim(c(-1.5, 1.5)) +
+    ylim(c(-1.5, 1.5))
+
+pdf_and_png(p_scatter_nolabel, output_corr, paste0("risk_vs_prog_scatter_nolabel", str_mod), pdfWidth = 3, pdfHeight = 2, scale = 3)
+
+
+
+diff_expr_test <- diff_expr |>
+    group_by(Module) |>
+    dplyr::mutate(mean_module = mean(Score), var_module = var(Score), z = (Score - mean_module) / sd(Score), min_max = 2 * ((Score - min(Score)) / max(Score - min(Score)) - 0.5))
+
+if (GROUPING_MODE == "LINEAGE") {
+    diff_expr_test$cellID_short <- factor(diff_expr_test$cellID_short, levels = cluster_info$cellID_short)
+}
+
+diff_expr_test$Module <- factor(diff_expr_test$Module, levels = c(
+    "NaiveT",
+    "CytotoxicT",
+    "ExhaustedT",
+    "DysfunctionalT",
+    "SASP",
+    "IFN",
+    "HLA"
+))
+
+p2 <- ggplot(diff_expr_test) +
+    geom_tile(aes(x = cellID_short, y = Module, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    facet_grid(~superclust, scales = "free_x", space = "free_x") +
+    theme_prism() +
+    xlab("") +
+    ylab("") +
+    theme(
+        axis.text.x = element_blank(),
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+    ) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+blank_df <- diff_abun_df |> dplyr::distinct(cellID_short, superclust)
+colours <- deframe(ggprism::ggprism_data$themes[["black_and_white"]])
+
+blank_test <- ggplot(blank_df, aes(x = cellID_short)) +
+    facet_grid(~superclust, scales = "free_x", space = "free_x") +
+    geom_blank() +
+    theme_void() +
+    theme(
+        axis.text.x = element_text(
+            size = 14 * 0.95, colour = colours["axisLabelColor"],
+            family = "sans", face = "bold",
+            margin = margin(t = 0.8 * 14 / 4),
+            angle = 90,
+            vjust = 0.5,
+            hjust = 1,
+        ),
+        axis.text.x.top = element_text(margin = margin(b = 0.8 * 14 / 4), vjust = 0),
+        strip.background = element_blank(),
+        strip.background.x = element_blank(),
+        strip.background.y = element_blank(),
+        strip.text = element_blank(),
+        strip.text.x = element_blank(),
+        strip.text.x.bottom = element_blank(),
+        strip.text.x.top = element_blank(),
+        strip.text.y = element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.y.right = element_blank(),
+        plot.margin = margin(
+            0, 14 / 2,
+            0, 14 / 2
+        ),
+    )
+
+p_comb <- p / p2 + plot_layout(axes = "collect_x", widths = c(6, 6), heights = c(5, 5))
+LG$p_comb <- LG$p / LG$p + plot_layout(axes = "collect_x", widths = c(6, 6), heights = c(5, 5))
+
+TEST_ALL <- patchwork::wrap_plots(list(LG$p, p, patchwork::plot_spacer(), patchwork::plot_spacer(), patchwork::plot_spacer(), p2, patchwork::plot_spacer(), patchwork::plot_spacer(), patchwork::plot_spacer(), blank_test),
+    ncol = 2, nrow = 5, widths = c(length(LG$cluster_ordering), length(cluster_ordering)),
+    heights = c(5 * 3 / 5, -2, 11 * 3 / 5, -1.25, 0)
+) # + plot_layout(widths = c(1, 6), ncol = 2)
+
+TEST_ALL <- patchwork::wrap_plots(list(p, patchwork::plot_spacer(), p2, patchwork::plot_spacer(), blank_test),
+    ncol = 1, nrow = 5, widths = c(length(cluster_ordering)),
+    heights = c(5 * 3 / 5, -2, 11 * 3 / 5, -1.25, 0)
+) # + plot_layout(widths = c(1, 6), ncol = 2)
+pdf_and_png(p_comb, output_corr, paste0("test_combined", str_mod), pdfWidth = 10, pdfHeight = 3.2, scale = 3)
+pdf_and_png(TEST_ALL, output_corr, paste0("test_combined_with_lingroup_", str_mod), pdfWidth = 10, pdfHeight = 3.2, scale = 2.5)
+
+TEST_NO_SUBPANEL <- patchwork::wrap_plots(list(p, patchwork::plot_spacer(), p2, patchwork::plot_spacer(), blank_test),
+    ncol = 1, nrow = 5, widths = c(length(cluster_ordering)),
+    heights = c(5 * 3 / 5, -1.2, 11 * 3 / 5, -1.25, 0)
+)
+pdf_and_png(TEST_NO_SUBPANEL, output_corr, paste0("NO_SUBPANEL_test_combined_with_lingroup_", str_mod), pdfWidth = 8, pdfHeight = 2.8, scale = 2.5)
+
+pdf_and_png(LG$p, output_corr, paste0("LINEAGE_GROUP_PANEL_", str_mod), pdfWidth = 4, pdfHeight = 2.5, scale = 3)
+# + plot_layout(widths = c(1, 6), ncol = 2)
+# p <- ggplot(diff_abun_df |> dplyr::filter(lineage_group != "Plasma")) +
+#     geom_tile(aes(x = cellID_short, y = Comparison, fill = logFC)) +
+#     scale_fill_gradient2(
+#         low = fill_NP,
+#         # "#409fd5",
+#         mid = "white",
+#         high = "#e65a88"
+#     ) +
+#     xlab("") +
+#     ylab("") +
+#     theme(axis.text.x = element_text(
+#         angle = 90,
+#         vjust = 0.5, hjust = 1,
+#     )) +
+#     guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+# pdf_and_png(p, output_corr, "test_condensed", pdfWidth = 8.5, pdfHeight = 1.6, scale = 2)
+```
+
+# Supplemental Figure 11 - Scatter plot for Triplet vs Overall 
+
+```{r}
+diff_abun_prog <- diff_abun_df_all |> dplyr::filter(Comparison %in% c("RP_v_NP", "RP.T_v_NP.T"))
+
+diff_abun_prog <- diff_abun_prog |> spread(Comparison, logFC)
+
+diff_abun_prog <- diff_abun_prog |> dplyr::mutate(direction = dplyr::case_when(
+    RP.T_v_NP.T > 0 & RP_v_NP > 0 ~ "RP Enriched Consistent",
+    RP.T_v_NP.T < 0 & RP_v_NP < 0 ~ "NP Enriched Consistent",
+    RP.T_v_NP.T > 0 & RP_v_NP < 0 ~ "NP Overall, RP Triplet",
+    RP.T_v_NP.T < 0 & RP_v_NP > 0 ~ "NP Triplet, RP Overall",
+    RP.T_v_NP.T == 0 & RP_v_NP > 0 ~ "RP Overall, NC Triplet",
+    RP.T_v_NP.T == 0 & RP_v_NP < 0 ~ "NP Overall, NC Triplet",
+    RP.T_v_NP.T > 0 & RP_v_NP == 0 ~ "RP Triplet, NC Overall",
+    RP.T_v_NP.T < 0 & RP_v_NP == 0 ~ "NP Triplet, NC Overall",
+    RP.T_v_NP.T == 0 & RP_v_NP == 0 ~ "NC",
+    .default = "UNKNOWN CASE"
+))
+
+p_scatter <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = RP.T_v_NP.T, y = RP_v_NP, fill = direction, color = direction)) +
+    geom_label_repel(aes(x = RP.T_v_NP.T, y = RP_v_NP, label = cellID_short, fill = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-T v NP-T Adjusted Log2FC") +
+    ylab("RP v NP Adjusted Log2FC") +
+    xlim(c(-1, 1)) +
+    ylim(c(-1, 1))
+
+pdf_and_png(p_scatter, output_corr, "Triplet_v_overall_scatter", pdfWidth = 6, pdfHeight = 4, scale = 3)
+
+diff_abun_prog <- diff_abun_df_all |> dplyr::filter(Comparison %in% c("RP.D_v_NP.D", "RP.T_v_NP.T"))
+
+diff_abun_prog <- diff_abun_prog |> spread(Comparison, logFC)
+
+diff_abun_prog <- diff_abun_prog |> dplyr::mutate(direction = dplyr::case_when(
+    RP.T_v_NP.T > 0 & RP.D_v_NP.D > 0 ~ "RP Enriched Consistent",
+    RP.T_v_NP.T < 0 & RP.D_v_NP.D < 0 ~ "NP Enriched Consistent",
+    RP.T_v_NP.T > 0 & RP.D_v_NP.D < 0 ~ "NP Doublet, RP Triplet",
+    RP.T_v_NP.T < 0 & RP.D_v_NP.D > 0 ~ "NP Triplet, RP Doublet",
+    RP.T_v_NP.T == 0 & RP.D_v_NP.D > 0 ~ "RP Doublet, NC Triplet",
+    RP.T_v_NP.T == 0 & RP.D_v_NP.D < 0 ~ "NP Doublet, NC Triplet",
+    RP.T_v_NP.T > 0 & RP.D_v_NP.D == 0 ~ "RP Triplet, NC Doublet",
+    RP.T_v_NP.T < 0 & RP.D_v_NP.D == 0 ~ "NP Triplet, NC Doublet",
+    RP.T_v_NP.T == 0 & RP.D_v_NP.D == 0 ~ "NC",
+    .default = "UNKNOWN CASE"
+))
+
+p_scatter <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = RP.T_v_NP.T, y = RP.D_v_NP.D, fill = direction, color = direction)) +
+    geom_label_repel(aes(x = RP.T_v_NP.T, y = RP.D_v_NP.D, label = cellID_short, fill = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-T v NP-T Adjusted Log2FC") +
+    ylab("RP-D v NP-D Adjusted Log2FC") +
+    xlim(c(-1.5, 1.5)) +
+    ylim(c(-1.5, 1.5))
+
+pdf_and_png(p_scatter, output_corr, "Triplet_v_doublet_scatter", pdfWidth = 6, pdfHeight = 4, scale = 3)
+```
+
+```{r}
+# baseline_noplasma@meta.data <- dplyr::left_join(baseline_noplasma@meta.data, superclust_df)
+# rownames(baseline_noplasma@meta.data) <- baseline_noplasma@meta.data$cellname
+
+# test <- markers_and_heatmap(baseline_noplasma, output = output_corr, nameMod = "superclust", findMarkersVariable = "superclust", displayVariable = "superclust")
+```
+
+```{r}
+
+```

@@ -1,0 +1,2181 @@
+---
+  title: "MMRF Immune Atlas Myeloid Analysis"
+author: "Marina Michaud - Modified by William Pilcher"
+date: "Orig 1.25.24, Update 2.29.24"
+output: 
+  html_document:
+  toc: true
+toc_float: true
+editor_options: 
+  chunk_output_type: console
+---
+  
+  **Metadata fields:**
+  
+  -   \$progression_group -\> NP, RP (for non- or rapid progressing)
+
+-   \$subcluster_V03072023 -\> Cell seurat cluster label (e.g., BEry.2)
+
+-   \$public_id -\> Unique identifier per patient.
+
+-   \$aliquot_id -\> Unique identifier per sample (at baseline - there should be one aliquot per public_id)
+
+-   \$siteXbatch -\> Variable indicating the processing center and batch number, for correction.
+
+
+Renders Figures 5c (Cellchat heatmap) and 5d (circos plot for IFNG signaling)
+
+# Libraries
+```{r warning=FALSE, include=FALSE}
+organism <- "org.Hs.eg.db"
+library(CellChat)
+CellChatDB <- CellChatDB.human
+
+library(Seurat)
+library(BiocManager)
+library(tidyverse)
+library(RColorBrewer)
+library(ggplot2)
+library(gridExtra)
+library(EnhancedVolcano)
+library(clusterProfiler)
+library(enrichplot)
+library(ReactomePA)
+library(organism, character.only = TRUE)
+library(ggbreak)
+library(ggprism)
+library(tidyverse)
+library(speckle)
+library(limma)
+library(ComplexHeatmap)
+library(cluster)
+library(ggpubr)
+library(speckle)
+library(circlize)
+library(ggalluvial)
+library(NMF)
+library(speckle)
+```
+
+# Functions
+```{r Custom dot plot}
+library(cowplot)
+customDotPlot <- function(
+    object,
+    assay = NULL,
+    features,
+    cols = c("lightgrey", "blue"),
+    col.min = -2.5,
+    col.max = 2.5,
+    dot.min = 0,
+    dot.scale = 6,
+    idents = NULL,
+    group.by = NULL,
+    split.by = NULL,
+    cluster.idents = FALSE,
+    scale = TRUE,
+    scale.by = "radius",
+    scale.min = NA,
+    scale.max = NA,
+    idents.grouping = NA) {
+    assay <- assay %||% DefaultAssay(object = object)
+    DefaultAssay(object = object) <- assay
+    split.colors <- !is.null(x = split.by) && !any(cols %in% rownames(x = brewer.pal.info))
+    scale.func <- switch(
+        EXPR = scale.by,
+        "size" = scale_size,
+        "radius" = scale_radius,
+        stop("'scale.by' must be either 'size' or 'radius'")
+    )
+    feature.groups <- NULL
+    if (is.list(features) | any(!is.na(names(features)))) {
+        feature.groups <- unlist(x = sapply(
+            X = 1:length(features),
+            FUN = function(x) {
+                return(rep(x = names(x = features)[x], each = length(features[[x]])))
+            }
+        ))
+        if (any(is.na(x = feature.groups))) {
+            warning(
+                "Some feature groups are unnamed.",
+                call. = FALSE,
+                immediate. = TRUE
+            )
+        }
+        features <- unlist(x = features)
+        names(x = feature.groups) <- features
+    }
+
+    idents.groups <- NULL
+    if (is.list(idents.grouping) | any(!is.na(names(idents.grouping)))) {
+        idents.groups <- unlist(x = sapply(
+            X = 1:length(idents.grouping),
+            FUN = function(x) {
+                return(rep(x = names(x = idents.grouping)[x], each = length(idents.grouping[[x]])))
+            }
+        ))
+        if (any(is.na(x = idents.grouping))) {
+            warning(
+                "Some feature groups are unnamed.",
+                call. = FALSE,
+                immediate. = TRUE
+            )
+        }
+        idents.grouping <- unlist(x = idents.grouping)
+        names(x = idents.groups) <- idents.grouping
+    }
+
+    cells <- unlist(x = CellsByIdentities(object = object, idents = idents))
+
+    data.features <- FetchData(object = object, vars = features, cells = cells)
+    data.features$id <- if (is.null(x = group.by)) {
+        Idents(object = object)[cells, drop = TRUE]
+    } else {
+        object[[group.by, drop = TRUE]][cells, drop = TRUE]
+    }
+    if (!is.factor(x = data.features$id)) {
+        data.features$id <- factor(x = data.features$id)
+    }
+
+    id.levels <- levels(x = data.features$id)
+    if (is.list(idents.grouping) | any(!is.na(names(idents.grouping)))) {
+        id.levels <- unname(idents.grouping)
+    }
+    data.features$id <- as.vector(x = data.features$id)
+    if (!is.null(x = split.by)) {
+        splits <- object[[split.by, drop = TRUE]][cells, drop = TRUE]
+        if (split.colors) {
+            if (length(x = unique(x = splits)) > length(x = cols)) {
+                stop("Not enough colors for the number of groups")
+            }
+            cols <- cols[1:length(x = unique(x = splits))]
+            names(x = cols) <- unique(x = splits)
+        }
+        data.features$id <- paste(data.features$id, splits, sep = "_")
+        unique.splits <- unique(x = splits)
+        id.levels <- paste0(rep(x = id.levels, each = length(x = unique.splits)), "_", rep(x = unique(x = splits), times = length(x = id.levels)))
+    }
+    data.plot <- lapply(
+        X = unique(x = data.features$id),
+        FUN = function(ident) {
+            data.use <- data.features[data.features$id == ident, 1:(ncol(x = data.features) - 1), drop = FALSE]
+            avg.exp <- apply(
+                X = data.use,
+                MARGIN = 2,
+                FUN = function(x) {
+                    return(mean(x = expm1(x = x)))
+                }
+            )
+            pct.exp <- apply(X = data.use, MARGIN = 2, FUN = PercentAbove, threshold = 0)
+            return(list(avg.exp = avg.exp, pct.exp = pct.exp))
+        }
+    )
+    names(x = data.plot) <- unique(x = data.features$id)
+    if (cluster.idents) {
+        mat <- do.call(
+            what = rbind,
+            args = lapply(X = data.plot, FUN = unlist)
+        )
+        mat <- scale(x = mat)
+        id.levels <- id.levels[hclust(d = dist(x = mat))$order]
+    }
+    data.plot <- lapply(
+        X = names(x = data.plot),
+        FUN = function(x) {
+            data.use <- as.data.frame(x = data.plot[[x]])
+            data.use$features.plot <- rownames(x = data.use)
+            data.use$id <- x
+            return(data.use)
+        }
+    )
+    data.plot <- do.call(what = "rbind", args = data.plot)
+    if (!is.null(x = id.levels)) {
+        data.plot$id <- factor(x = data.plot$id, levels = id.levels)
+    }
+    ngroup <- length(x = levels(x = data.plot$id))
+    if (ngroup == 1) {
+        scale <- FALSE
+        warning(
+            "Only one identity present, the expression values will be not scaled",
+            call. = FALSE,
+            immediate. = TRUE
+        )
+    } else if (ngroup < 5 & scale) {
+        warning(
+            "Scaling data with a low number of groups may produce misleading results",
+            call. = FALSE,
+            immediate. = TRUE
+        )
+    }
+    avg.exp.scaled <- sapply(
+        X = unique(x = data.plot$features.plot),
+        FUN = function(x) {
+            data.use <- data.plot[data.plot$features.plot == x, "avg.exp"]
+            if (scale) {
+                data.use <- scale(x = data.use)
+                data.use <- MinMax(data = data.use, min = col.min, max = col.max)
+            } else {
+                data.use <- log1p(x = data.use)
+            }
+            return(data.use)
+        }
+    )
+    avg.exp.scaled <- as.vector(x = t(x = avg.exp.scaled))
+    if (split.colors) {
+        avg.exp.scaled <- as.numeric(x = cut(x = avg.exp.scaled, breaks = 20))
+    }
+    data.plot$avg.exp.scaled <- avg.exp.scaled
+    data.plot$features.plot <- factor(
+        x = data.plot$features.plot,
+        levels = features
+    )
+    data.plot$pct.exp[data.plot$pct.exp < dot.min] <- NA
+    data.plot$pct.exp <- data.plot$pct.exp * 100
+    if (split.colors) {
+        splits.use <- vapply(
+            X = as.character(x = data.plot$id),
+            FUN = gsub,
+            FUN.VALUE = character(length = 1L),
+            pattern = paste0(
+                "^((",
+                paste(sort(x = levels(x = object), decreasing = TRUE), collapse = "|"),
+                ")_)"
+            ),
+            replacement = "",
+            USE.NAMES = FALSE
+        )
+        data.plot$colors <- mapply(
+            FUN = function(color, value) {
+                return(colorRampPalette(colors = c("grey", color))(20)[value])
+            },
+            color = cols[splits.use],
+            value = avg.exp.scaled
+        )
+    }
+    color.by <- ifelse(test = split.colors, yes = "colors", no = "avg.exp.scaled")
+    if (!is.na(x = scale.min)) {
+        data.plot[data.plot$pct.exp < scale.min, "pct.exp"] <- scale.min
+    }
+    if (!is.na(x = scale.max)) {
+        data.plot[data.plot$pct.exp > scale.max, "pct.exp"] <- scale.max
+    }
+    if (!is.null(x = feature.groups)) {
+        data.plot$feature.groups <- factor(
+            x = feature.groups[data.plot$features.plot],
+            levels = unique(x = feature.groups)
+        )
+    }
+    if (!is.null(x = idents.groups)) {
+        data.plot$idents.groups <- factor(
+            x = idents.groups[data.plot$id],
+            levels = unique(x = idents.groups)
+        )
+    }
+    plot <- ggplot(data = data.plot, mapping = aes_string(x = "features.plot", y = "id")) +
+        geom_point(mapping = aes_string(size = "pct.exp", color = color.by)) +
+        scale.func(range = c(0, dot.scale), limits = c(scale.min, scale.max)) +
+        theme_cowplot() +
+        theme(axis.title.x = element_blank(), axis.title.y = element_blank()) +
+        guides(size = guide_legend(title = "Percent Expressed")) +
+        labs(
+            x = "Features",
+            y = ifelse(test = is.null(x = split.by), yes = "Identity", no = "Split Identity")
+        )
+    if (!is.null(x = feature.groups) && !is.null(x = idents.groups)) {
+        plot <- plot + facet_grid(
+            facets = idents.groups ~ feature.groups,
+            scales = "free",
+            space = "free",
+            switch = "y"
+        ) + theme(
+            panel.spacing = unit(x = 1, units = "lines"),
+            strip.background = element_blank()
+        )
+    } else if (!is.null(x = feature.groups)) {
+        plot <- plot + facet_grid(
+            facets = ~feature.groups,
+            scales = "free_x",
+            space = "free_x",
+            switch = "y"
+        ) + theme(
+            panel.spacing = unit(x = 1, units = "lines"),
+            strip.background = element_blank()
+        )
+    } else if (!is.null(x = idents.groups)) {
+        plot <- plot + facet_grid(
+            facets = idents.groups ~ .,
+            scales = "free_y",
+            space = "free_y",
+        ) + theme(
+            panel.spacing = unit(x = 1, units = "lines"),
+            strip.background = element_blank()
+        )
+    }
+    if (split.colors) {
+        plot <- plot + scale_color_identity()
+    } else if (length(x = cols) == 1) {
+        plot <- plot + scale_color_distiller(palette = cols)
+    } else {
+        plot <- plot + scale_color_gradient(low = cols[1], high = cols[2])
+    }
+    if (!split.colors) {
+        plot <- plot + guides(color = guide_colorbar(title = "Avg. Exp."))
+    }
+    return(plot)
+}
+```
+
+# Color palettes
+```{r group palette}
+group_pal <- c(
+    "NP" = "cornflowerblue",
+    "RP" = "salmon2"
+)
+```
+
+```{r celltype palette}
+celltype_pal <- c(
+    "ncMono" = "#8B3058FF",
+    "Myeloid Progenitor*" = "#FDBF6F",
+    "cDC1" = "#B2DF8A",
+    "cDC2*" = "#33A02C",
+    "pDC" = "#DE597CFF",
+    "M2 Macrophage" = "#FFB8ACFF",
+    "Neutrophil" = "#1F6E9CFF",
+    "cMono" = "#E87B89FF"
+)
+```
+
+```{r cluster palette} 
+# cluster_pal <- c("#FBE183FF", "#F4C40FFF", "#FE9B00FF", "#D8443CFF", "#ED645AFF", "#9B3441FF", "#DE597CFF", "#E87B89FF", "#E6A2A6FF", "#AA7AA1FF", "#9F5691FF", "#633372FF", "#1F6E9CFF", "#2F8AC4FF", "#24796CFF", "#2B9B81FF", "#52BCA3FF", "#92C051FF")
+# names(cluster_pal) <- levels(myeloid.data)
+```
+
+```{r cellchat_pal}
+cellchat_pal <- c(
+    "#BA68C8FF", "#9C27B0FF", "#4A148CFF", # B cells
+    "#54BFB7FF", "#0AA398FF", "#067E79FF", "#217A79FF", "#144d4c", "#1e4533", "#6ec09a", # CD4
+    "#1D6295", "#529ED4", "#273F8A", "#08306BFF", "#3A5FCD", "#78B3F0", # CD8
+    "#48A0DC", "#2D5FB7", "#ADD9E6", "#87B1D9", "#113295", "#8AA3F8", # CD8
+    "#9ECAE1FF", # MAIT
+    "#DD3497FF", "#7A0177FF", "#AE017EFF", "#672044FF", # NK cells
+    "#FDBF6F", # myeloid progenitors
+    "#1F6E9CFF", # neutrophils
+    "#8B3058FF", "#E87B89FF", # monocytes
+    "#AD466CFF", "#FA9FB5FF", "#EEB5BE", "#df6c7e", # myeloid
+    "#FFB8ACFF", # M2
+    "#92C051FF", # cDCs
+    "#DE597CFF", # pDCs
+    "#A262A9", # MK
+    "#ca7c98", # MAST
+    "#DC715A", # HSC
+    "#DACE3A", # Fibro
+    "#DC5E5A", # Erythrocytes
+    "darkred" # Plasma
+)
+```
+
+```{r dot plots}
+dot <- c("white", "#3E8CC9")
+```
+
+```{r feature plots}
+feature <- rev(brewer.pal(n = 8, name = "Spectral"))
+```
+
+# Data pre-processing
+```{r load}
+# Load objects and merge
+source("/opt/localdata/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/source/Figure_3/Fig5_corrected_load_data.R")
+plan("sequential")
+rm(lineage_label, cluster_naming, newMD)
+gc()
+```
+
+```{r Add corrected matrices to CellChat baseline object}
+# Load corrected count matrices
+# fibro.counts <- readRDS("/opt/localdata2/mmichaud/MMRF/ImmuneAtlas/BatchCorrected_Counts/Fibroblast_Final_BatchCorrected_Counts.RDS")
+# Bery.counts <- readRDS("/opt/localdata2/mmichaud/MMRF/ImmuneAtlas/BatchCorrected_Counts/B_ery_Final_BatchCorrected_Counts.RDS")
+# myeloid.counts <- readRDS("/opt/localdata2/mmichaud/MMRF/ImmuneAtlas/BatchCorrected_Counts/Myeloid_Final_BatchCorrected_Counts.RDS")
+# NKT.counts <- readRDS("/opt/localdata2/mmichaud/MMRF/ImmuneAtlas/BatchCorrected_Counts/NK_T_Final_BatchCorrected_Counts.RDS")
+# Ery.counts <- readRDS("/opt/localdata2/mmichaud/MMRF/ImmuneAtlas/BatchCorrected_Counts/Erythrocyte_Final_BatchCorrected_Counts.RDS")
+
+# # Merge matrices
+# corrected.counts <- cbind(fibro.counts, Bery.counts, myeloid.counts, NKT.counts, Ery.counts)
+# length(colnames(corrected.counts))
+
+# # Subset baseline samples for CellChat
+# baseline.counts <- corrected.counts[, (colnames(corrected.counts) %in% colnames(baseline.data))]
+# length(colnames(baseline.counts)) == length(colnames(baseline.data))
+
+# # Add corrected matrix as assay to baseline data
+# corrected.assay <- CreateAssayObject(counts = baseline.counts)
+# baseline.data[["Corrected"]] <- corrected.assay
+# baseline.data@assays[["Corrected"]]
+
+# Baseline NP vs RP dataset
+baseline.data <- subset(merged, subset = (
+    isDoublet %in% c("Singlet") &
+        VJ_INTERVAL %in% c("Baseline")
+))
+
+DefaultAssay(baseline.data) <- "RNA_Batch_Corrected"
+rm(merged)
+gc()
+```
+
+```{r CellChat idents}
+# Renamed idents df
+idents.df <- read_csv("/opt/localdata/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/data/CellChat_MD/subcluster_V03072023_CellChat-Plasma_WP_Mod_no_np_rp_filt.csv")
+# Cell type labels
+Idents(baseline.data) <- factor(baseline.data$subcluster_V03072023)
+cluster.ids <- c(idents.df$CellChat)
+names(cluster.ids) <- levels(baseline.data)
+baseline.data <- RenameIdents(baseline.data, cluster.ids)
+baseline.data$CellChat <- Idents(baseline.data)
+
+# Reorder
+baseline.data$CellChat <- factor(baseline.data$CellChat,
+    levels = idents.df$Ordered[1:44]
+)
+
+test <- baseline.data@meta.data |>
+    dplyr::distinct(cellID_short, CellChat) |>
+    arrange(CellChat)
+write.csv(test, "/opt/localdata/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/output/supplementary_table_cellchat_mapping.csv")
+
+
+Idents(baseline.data) <- baseline.data$CellChat
+
+names(cellchat_pal) <- levels(baseline.data$CellChat)
+```
+
+# CellChat analysis
+Figure 5d chord diagram included in this chunk
+```{r Baseline CellChat}
+output <- file.path(output, "CellChat_Alt", "Unfiltered")
+dir.create(output, recursive = T, showWarnings = F)
+setwd(output)
+dir.create("CellChat", recursive = T, showWarnings = F)
+dir.create("CellChat/Baseline/Figure5", recursive = T, showWarnings = F)
+dir.create("CellChat/Baseline/L-R", recursive = T, showWarnings = F)
+
+dir.create("CellChat/NP/L-R", recursive = T, showWarnings = F)
+dir.create("CellChat/RP/L-R", recursive = T, showWarnings = F)
+
+
+Idents(baseline.data) <- baseline.data$CellChat
+DefaultAssay(baseline.data) <- "RNA_Batch_Corrected"
+baseline.cellchat <- createCellChat(baseline.data, group.by = "CellChat")
+summary(baseline.cellchat@data@i == baseline.data@assays[["RNA_Batch_Corrected"]]@data@i)["FALSE"]
+
+# Set database for signaling
+baseline.cellchat@DB <- CellChatDB
+
+# Pre-processing
+baseline.cellchat <- subsetData(baseline.cellchat)
+baseline.cellchat <- identifyOverExpressedGenes(baseline.cellchat)
+baseline.cellchat <- identifyOverExpressedInteractions(baseline.cellchat)
+
+# Compute the communication probability
+baseline.cellchat <- computeCommunProb(baseline.cellchat)
+
+# Relabel idents
+identity <- data.frame(group = baseline.data$CellChat, row.names = names(baseline.data$CellChat))
+baseline.cellchat <- addMeta(baseline.cellchat, meta = identity, meta.name = "CellChat")
+baseline.cellchat <- setIdent(baseline.cellchat, ident.use = "CellChat") # set "cell_type" as default cell identity
+levels(baseline.cellchat@idents)
+
+# infer cellular communication network
+baseline.cellchat <- filterCommunication(baseline.cellchat, min.cells = 10)
+baseline.df <- subsetCommunication(baseline.cellchat)
+
+# Infer the cell-cell communication at a signaling pathway level
+baseline.cellchat <- computeCommunProbPathway(baseline.cellchat)
+
+# Calculate the aggregated cell-cell communication network
+baseline.cellchat <- aggregateNet(baseline.cellchat)
+
+saveRDS(baseline.cellchat, "/opt/pmedseq-data/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/data/cellchat_init_nofilter.rds")
+baseline.cellchat <- readRDS("/opt/pmedseq-data/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/data/cellchat_init_nofilter.rds")
+# Visualize number of interactions with weights/strengths
+matrix <- as.data.frame(baseline.cellchat@net$count)
+matrix[matrix == 0] <- 0.000000001
+matrix
+matrix <- data.matrix(matrix)
+
+png(
+    filename = "CellChat/Baseline/interaction_number_cord.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_circle(baseline.cellchat@net$count,
+    # remove.isolate = T,
+    top = 0.1,
+    arrow.width = 2,
+    arrow.size = 0.5,
+    edge.width.max = 10,
+    weight.scale = T,
+    label.edge = F,
+    color.use = cellchat_pal
+)
+dev.off()
+
+png(
+    filename = "CellChat/Baseline/interaction_strength_cord.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_circle(baseline.cellchat@net$weight,
+    # remove.isolate = T,
+    top = 0.1,
+    arrow.width = 2,
+    arrow.size = 0.5,
+    edge.width.max = 10,
+    weight.scale = T,
+    label.edge = F,
+    color.use = cellchat_pal
+)
+dev.off()
+
+# Save plots of all inferred networks
+pathways.show.all <- baseline.cellchat@netP$pathways
+for (i in 1:length(pathways.show.all)) {
+    # Compute and visualize the contribution of each ligand-receptor pair to the overall signaling pathway
+    gg <- netAnalysis_contribution(baseline.cellchat,
+        signaling = pathways.show.all[i]
+    )
+    ggsave(paste0("CellChat/Baseline/L-R/", pathways.show.all[i], "_L-R_contribution.pdf"),
+        plot = gg,
+        width = 13,
+        height = 7,
+        units = "in",
+        dpi = 600
+    )
+}
+
+# Compute and visualize the network centrality scores
+baseline.cellchat <- netAnalysis_computeCentrality(baseline.cellchat, slot.name = "netP")
+
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+png(
+    filename = "CellChat/Baseline/signalingRole_scatter.png",
+    width = 5,
+    height = 5,
+    units = "in",
+    res = 500
+)
+netAnalysis_signalingRole_scatter(baseline.cellchat, color.use = cellchat_pal)
+dev.off()
+
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+png(
+    filename = "CellChat/Baseline/signalingRole_heatmap.png",
+    width = 12,
+    height = 12,
+    units = "in",
+    res = 500
+)
+netAnalysis_signalingRole_heatmap(baseline.cellchat,
+    pattern = "outgoing", color.use = cellchat_pal,
+    width = 11, height = 20
+) +
+    netAnalysis_signalingRole_heatmap(baseline.cellchat,
+        pattern = "incoming", color.use = cellchat_pal,
+        width = 11, height = 20
+    )
+dev.off()
+
+# Identify outgoing communication pattern of secreting cells
+selectK(baseline.cellchat, pattern = "outgoing", nrun = 5)
+ggsave("CellChat/Baseline/selectK_outgoing.png")
+nPatterns <- 6
+png(
+    filename = "CellChat/Baseline/outgoing_patterns.png",
+    width = 10,
+    height = 15,
+    units = "in",
+    res = 300
+)
+baseline.cellchat <- identifyCommunicationPatterns(baseline.cellchat, pattern = "outgoing", k = nPatterns, width = 3, height = 20, font.size = 10)
+dev.off()
+
+# Identify incoming communication pattern of target cells
+selectK(baseline.cellchat, pattern = "incoming", nrun = 5)
+ggsave("CellChat/Baseline/selectK_incoming.png")
+nPatterns <- 4
+png(
+    filename = "CellChat/Baseline/incoming_patterns.png",
+    width = 10,
+    height = 15,
+    units = "in",
+    res = 300
+)
+baseline.cellchat <- identifyCommunicationPatterns(baseline.cellchat, pattern = "incoming", k = nPatterns, width = 3, height = 20, font.size = 10)
+dev.off()
+
+# River plot of signaling patterns
+outgoing.signaling <- as.data.frame(baseline.cellchat@netP[["pattern"]][["outgoing"]][["pattern"]][["signaling"]]) %>%
+    group_by(Signaling) %>%
+    slice_max(n = 1, order_by = Contribution)
+outgoing.signaling$Pattern <- case_match(
+    outgoing.signaling$Pattern,
+    "Pattern 1" ~ "#D53E4F",
+    "Pattern 2" ~ "#FC8D59",
+    "Pattern 3" ~ "#FEE08B",
+    "Pattern 4" ~ "#99D594",
+    "Pattern 5" ~ "#1F78B4",
+    "Pattern 6" ~ "#08306B"
+)
+outgoing.colors <- outgoing.signaling$Pattern
+names(outgoing.colors) <- outgoing.signaling$Signaling
+
+incoming.signaling <- as.data.frame(baseline.cellchat@netP[["pattern"]][["incoming"]][["pattern"]][["signaling"]]) %>%
+    group_by(Signaling) %>%
+    slice_max(n = 1, order_by = Contribution)
+incoming.signaling$Pattern <- case_match(
+    incoming.signaling$Pattern,
+    "Pattern 1" ~ "#FB9A99",
+    "Pattern 2" ~ "#CAB2D6",
+    "Pattern 3" ~ "#A6CEE3",
+    "Pattern 4" ~ "#B2DF8A"
+)
+incoming.colors <- incoming.signaling$Pattern
+names(incoming.colors) <- incoming.signaling$Signaling
+
+png(
+    filename = "CellChat/Baseline/netAnalysis_river.png",
+    width = 13,
+    height = 15,
+    units = "in",
+    res = 500
+)
+netAnalysis_river(baseline.cellchat,
+    pattern = c("outgoing"),
+    color.use.signaling = outgoing.colors,
+    color.use.pattern = c(
+        "Pattern 1" = "#D53E4F",
+        "Pattern 2" = "#FC8D59",
+        "Pattern 3" = "#FEE08B",
+        "Pattern 4" = "#99D594",
+        "Pattern 5" = "#3288BD",
+        "Pattern 6" = "#08306B"
+    ),
+    color.use = cellchat_pal
+) +
+    netAnalysis_river(baseline.cellchat,
+        pattern = c("incoming"),
+        color.use = cellchat_pal,
+        color.use.signaling = incoming.colors,
+        color.use.pattern = c(
+            "Pattern 1" = "#FB9A99",
+            "Pattern 2" = "#CAB2D6",
+            "Pattern 3" = "#A6CEE3",
+            "Pattern 4" = "#B2DF8A"
+        )
+    )
+dev.off()
+
+
+# Specific pathways
+pairLR.CXCL <- extractEnrichedLR(baseline.cellchat, signaling = "APRIL", geneLR.return = FALSE)
+pdf(
+    file = "CellChat/Baseline/interaction_network_circle_APRIL.png",
+    width = 8,
+    height = 8
+)
+netVisual_individual(baseline.cellchat, signaling = "APRIL", pairLR.use = "TNFSF13_TNFRSF17", layout = "circle", color.use = cellchat_pal, weight.scale = TRUE)
+dev.off()
+pairLR.CXCL <- extractEnrichedLR(baseline.cellchat, signaling = "CXCL", geneLR.return = FALSE)
+
+pdf(
+    file = "CellChat/Baseline/interaction_network_circle_CXCL.png",
+    width = 8,
+    height = 8
+)
+netVisual_individual(baseline.cellchat, signaling = "CXCL", layout = "circle", color.use = cellchat_pal, weight.scale = TRUE)
+dev.off()
+
+pairLR.CXCL <- extractEnrichedLR(baseline.cellchat, signaling = "APRIL", geneLR.return = FALSE)
+pdf(
+    file = "CellChat/Baseline/interaction_network_circle_BAFF.png",
+    width = 8,
+    height = 8
+)
+netVisual_individual(baseline.cellchat, signaling = "BAFF", pairLR.use = "TNFSF13B_TNFRSF13C", layout = "circle", color.use = cellchat_pal, weight.scale = TRUE)
+dev.off()
+
+
+# FIGURE 5D - IFNG Network circle
+pdf(
+    file = "CellChat/Baseline/interaction_network_circle_IFNG.pdf",
+    width = 8,
+    height = 8
+)
+cluster_labels <- levels(baseline.data$CellChat)
+# groups <- list("B Cell" = cluster_labels[c(1, 2, 3)], "CD4 T" = cluster_labels[c(4:10)], "CD8 T" = cluster_labels[c(11:23)], "Nk" = cluster_labels[c(24:27)], "Myeloid" = cluster_labels[c(29:37)], "Other" = cluster_labels[c(38:44)])
+groups <- c(rep("B Cell", 3), rep("CD4 T", 7), rep("CD8 T", 13), rep("Nk", 4), rep("Myeloid", 10), rep("Other", 7))
+names(groups) <- levels(baseline.cellchat@idents)
+netVisual_individual(baseline.cellchat, group = groups, signaling = "IFN-II", layout = "chord", color.use = cellchat_pal, weight.scale = TRUE)
+dev.off()
+
+
+# Specific clusters
+png(
+    filename = "CellChat/Baseline/netVisual_bubble_Myeloid12.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_bubble(baseline.cellchat, sources.use = 26, targets.use = c(1:37), remove.isolate = TRUE, thresh = 0.05)
+dev.off()
+
+png(
+    filename = "CellChat/Baseline/netVisual_bubble_Myeloid12_incoming.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_bubble(baseline.cellchat, sources.use = c(1:37), targets.use = c(26), remove.isolate = TRUE, thresh = 0.05)
+dev.off()
+
+nonMHC.pathways <- data_frame(pathways = baseline.cellchat@netP[["pathways"]])
+nonMHC.pathways <- nonMHC.pathways %>% filter(!grepl("MHC", pathways))
+
+png(
+    filename = "CellChat/Baseline/netVisual_bubble_Myeloid2_outgoing.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_bubble(baseline.cellchat,
+    sources.use = 27, targets.use = c(1:37), signaling = c(nonMHC.pathways$pathways),
+    remove.isolate = TRUE, thresh = 0.05
+)
+dev.off()
+
+png(
+    filename = "CellChat/Baseline/netVisual_bubble_Myeloid2_incoming.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_bubble(baseline.cellchat,
+    sources.use = c(1:37), targets.use = c(27), signaling = c(nonMHC.pathways$pathways),
+    remove.isolate = TRUE, thresh = 0.05
+)
+dev.off()
+
+png(
+    filename = "CellChat/Baseline/netVisual_bubble_Myeloid15_outgoing.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_bubble(baseline.cellchat,
+    sources.use = 30, targets.use = c(1:37), signaling = c(nonMHC.pathways$pathways),
+    remove.isolate = TRUE, thresh = 0.05
+)
+dev.off()
+
+png(
+    filename = "CellChat/Baseline/netVisual_bubble_Myeloid15_incoming.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_bubble(baseline.cellchat,
+    sources.use = c(1:37), targets.use = c(30), signaling = c(nonMHC.pathways$pathways),
+    remove.isolate = TRUE, thresh = 0.05
+)
+dev.off()
+
+png(
+    filename = "CellChat/Baseline/interaction_Myeloid12.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_circle(baseline.cellchat@net$count,
+    sources.use = c(26),
+    targets.use = c(1:37),
+    top = 0.10,
+    arrow.width = 2,
+    arrow.size = 0.5,
+    edge.width.max = 10,
+    weight.scale = T,
+    label.edge = F,
+    color.use = cellchat_pal
+)
+dev.off()
+
+png(
+    filename = "CellChat/Baseline/interaction_Myeloid12.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_circle(baseline.cellchat@net$count,
+    sources.use = c(26),
+    targets.use = c(1:37),
+    top = 0.1,
+    arrow.width = 2,
+    arrow.size = 0.5,
+    edge.width.max = 10,
+    weight.scale = T,
+    label.edge = F,
+    color.use = cellchat_pal
+)
+dev.off()
+
+png(
+    filename = "CellChat/Baseline/interaction_Myeloid2.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_circle(baseline.cellchat@net$count,
+    sources.use = c(27),
+    targets.use = c(1:37),
+    top = 0.1,
+    arrow.width = 2,
+    arrow.size = 0.5,
+    edge.width.max = 10,
+    weight.scale = T,
+    label.edge = F,
+    color.use = cellchat_pal
+)
+dev.off()
+
+png(
+    filename = "CellChat/Baseline/interaction_Myeloid15.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_circle(baseline.cellchat@net$count,
+    sources.use = c(30),
+    targets.use = c(1:37),
+    top = 0.1,
+    arrow.width = 2,
+    arrow.size = 0.5,
+    edge.width.max = 10,
+    weight.scale = T,
+    label.edge = F,
+    color.use = cellchat_pal
+)
+dev.off()
+```
+
+# Figure 5c
+
+```{r CellChat Figure 5}
+# Select pathways
+signaling <- c("MHC-II", "IFN-II", "CCL", "CD86", "TNF", "BAFF", "APRIL", "CXCL", "THBS", "BAG", "CSF", "CHEMERIN", "CD40", "FLT3")
+row_anno <- c("MHC-II/CD4", "IFNG/IFNGR", "(CCL5,CCL3)/CCR1", "CD86/(CD28, CTLA-4)", "TNF/TNFRSF1B", "BAFF/(BAFF-R, TACI)", "APRIL/(BCMA, TACI)", "CXCL12/CXCR4", "THBS/(CD36,CD47)", "BAG6/NCR3", "M-CSF/CSFR1", "Chemerin/ChemR23", "CD40LG/(ITGAM+ITGB2)", "FLT3L/FLT3")
+# Outgoing signal matrix
+outgoing <- netAnalysis_signalingRole_heatmap(baseline.cellchat,
+    pattern = "outgoing", color.use = cellchat_pal,
+    signaling, color.heatmap = "Blues",
+    width = 12, height = 5
+)
+outgoing@right_annotation <- NULL
+outgoing@column_title_param[["gp"]][["fontface"]] <- "bold"
+outgoing@row_names_param[["gp"]][["fontface"]] <- "bold"
+outgoing@row_names_param[["anno"]]@var_env[["value"]] <- row_anno
+
+# Incoming signal matrix
+incoming <- netAnalysis_signalingRole_heatmap(baseline.cellchat,
+    pattern = "incoming", color.use = cellchat_pal,
+    signaling, color.heatmap = "Blues",
+    width = 12, height = 5
+)
+incoming@right_annotation <- NULL
+incoming@column_title_param[["gp"]][["fontface"]] <- "bold"
+incoming@row_names_param[["gp"]][["fontface"]] <- "bold"
+outgoing@row_names_param[["anno"]]@var_env[["value"]] <- row_anno
+incoming@row_names_param[["anno"]]@var_env[["value"]] <- row_anno
+
+# Combined heatmap
+heatmaps <- outgoing + incoming
+heatmaps@row_title_param
+png(
+    filename = "CellChat/Baseline/Figure5/Heatmap.png",
+    width = 12,
+    height = 6,
+    units = "in",
+    res = 500
+)
+draw(heatmaps, ht_gap = unit(1, "cm"), merge_legend = FALSE, legend_grouping = "original")
+
+dev.off()
+
+pdf(
+    file = "CellChat/Baseline/Figure5/Heatmap.pdf",
+    width = 12,
+    height = 6
+)
+draw(heatmaps, ht_gap = unit(1, "cm"), merge_legend = FALSE, legend_grouping = "original")
+
+dev.off()
+
+
+# Combined heatmap
+heatmaps <- outgoing %v% incoming
+heatmaps@row_title_param
+png(
+    filename = "CellChat/Baseline/Figure5/Heatmap_vert.png",
+    width = 8,
+    height = 15,
+    units = "in",
+    res = 500
+)
+draw(heatmaps, ht_gap = unit(1, "cm"), merge_legend = TRUE, legend_grouping = "original")
+
+dev.off()
+
+pdf(
+    file = "CellChat/Baseline/Figure5/Heatmap_vert.pdf",
+    width = 8,
+    height = 15
+)
+draw(heatmaps, ht_gap = unit(1, "cm"), merge_legend = TRUE, legend_grouping = "original")
+
+dev.off()
+```
+
+# (Code beyond this point not used in figure rendering)
+
+```{r}
+nkt <- subset(baseline.data, subset = (lineage_group %in% c("CD4", "CD8")))
+FEATURES <- c("IFNG", "CCL5", "CCL3", "CD27", "CD28", "CTLA4", "TNF", "CD40LG", "FLT3")
+
+tmp2_T <- AverageExpression(nkt, assays = "RNA", group.by = "public_id", features = FEATURES)$RNA |>
+    t() |>
+    as.data.frame()
+rm(nkt)
+gc()
+MYELOID <- subset(baseline.data, subset = (lineage_group %in% c("M")))
+
+FEATURES <- c("IRF1", "IFNGR1", "IFNGR2", "CD86", "HLA-DRA", "TNFRSF1B", "TNFAIP3", "IL1B", "TNFSF13", "TNFSF13B", "THBS1", "BAG6", "CCL5", "CCL3", "CXCL8", "ITGAM", "ITGB2")
+
+tmp2_m <- AverageExpression(MYELOID, assays = "RNA", group.by = "public_id", features = FEATURES)$RNA |>
+    t() |>
+    as.data.frame()
+rm(MYELOID)
+gc()
+GLOBAL <- subset(baseline.data, subset = (lineage_group != "P"))
+
+FEATURES <- c("IFNG", "HLA-DRA", "CD4")
+
+tmp2_G <- AverageExpression(GLOBAL, assays = "RNA", group.by = "public_id", features = FEATURES)$RNA |>
+    t() |>
+    as.data.frame()
+rm(GLOBAL)
+gc()
+
+MYELOID_cd14 <- subset(baseline.data, subset = (subcluster_V03072023 %in% c("Myeloid.0", "Myeloid.1", "Myeloid.2", "Myeloid.3", "Myeloid.8", "Myeloid.12")))
+
+FEATURES <- c("IRF1", "IFNGR1", "IFNGR2", "CD86", "HLA-DRA", "TNFRSF1B", "TNFAIP3", "IL1B", "TNFSF13", "TNFSF13B", "THBS1", "BAG6", "CCL5", "CCL3", "CXCL8", "ITGAM", "ITGB2")
+
+tmp2_m_cd14 <- AverageExpression(MYELOID_cd14, assays = "RNA", group.by = "public_id", features = FEATURES)$RNA |>
+    t() |>
+    as.data.frame()
+rm(MYELOID_cd14)
+gc()
+```
+
+
+```{r NP CellChat}
+Idents(baseline.data) <- baseline.data$progression_group
+DefaultAssay(baseline.data) <- "RNA_Batch_Corrected"
+options(stringsAsFactors = FALSE)
+
+# Create object
+NP <- subset(x = baseline.data, idents = c("NP"))
+Idents(NP) <- NP$CellChat
+NP.cellchat <- createCellChat(NP, group.by = "CellChat")
+rm(NP)
+
+# Set database for signaling
+NP.cellchat@DB <- CellChatDB
+
+# Pre-processing
+NP.cellchat <- subsetData(NP.cellchat)
+NP.cellchat <- identifyOverExpressedGenes(NP.cellchat)
+NP.cellchat <- identifyOverExpressedInteractions(NP.cellchat)
+
+# Compute the communication probability and infer cellular communication network
+NP.cellchat <- computeCommunProb(NP.cellchat)
+NP.cellchat <- filterCommunication(NP.cellchat, min.cells = 10)
+NP.df <- subsetCommunication(NP.cellchat)
+
+# Infer the cell-cell communication at a signaling pathway level
+NP.cellchat <- computeCommunProbPathway(NP.cellchat)
+
+# Calculate the aggregated cell-cell communication network
+NP.cellchat <- aggregateNet(NP.cellchat)
+
+# Visualize number of interactions with weights/strengths
+matrix <- as.data.frame(NP.cellchat@net$count)
+matrix[matrix == 0] <- 0.000000001
+matrix
+matrix <- data.matrix(matrix)
+
+png(
+    filename = "CellChat/NP/interaction_number_cord.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_circle(NP.cellchat@net$count,
+    # remove.isolate = T,
+    top = 0.1,
+    arrow.width = 2,
+    arrow.size = 0.5,
+    edge.width.max = 10,
+    weight.scale = T,
+    label.edge = F,
+    color.use = cellchat_pal
+)
+dev.off()
+
+png(
+    filename = "CellChat/NP/interaction_strength_cord.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_circle(NP.cellchat@net$weight,
+    # remove.isolate = T,
+    top = 0.1,
+    arrow.width = 2,
+    arrow.size = 0.5,
+    edge.width.max = 10,
+    weight.scale = T,
+    label.edge = F,
+    color.use = cellchat_pal
+)
+dev.off()
+
+# Save plots of all inferred networks
+pathways.show.all <- NP.cellchat@netP$pathways
+for (i in 1:length(pathways.show.all)) {
+    # Compute and visualize the contribution of each ligand-receptor pair to the overall signaling pathway
+    gg <- netAnalysis_contribution(NP.cellchat,
+        signaling = pathways.show.all[i]
+    )
+    ggsave(paste0("CellChat/NP/L-R/", pathways.show.all[i], "_L-R_contribution.pdf"),
+        plot = gg,
+        width = 13,
+        height = 7,
+        units = "in",
+        dpi = 600
+    )
+}
+
+# Compute and visualize the network centrality scores
+NP.cellchat <- netAnalysis_computeCentrality(NP.cellchat, slot.name = "netP")
+
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+png(
+    filename = "CellChat/NP/signalingRole_scatter.png",
+    width = 5,
+    height = 5,
+    units = "in",
+    res = 500
+)
+netAnalysis_signalingRole_scatter(NP.cellchat, color.use = cellchat_pal)
+dev.off()
+
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+png(
+    filename = "CellChat/NP/signalingRole_heatmap.png",
+    width = 10,
+    height = 12,
+    units = "in",
+    res = 500
+)
+netAnalysis_signalingRole_heatmap(NP.cellchat,
+    pattern = "outgoing", color.use = cellchat_pal,
+    width = 9, height = 20
+) +
+    netAnalysis_signalingRole_heatmap(NP.cellchat,
+        pattern = "incoming", color.use = cellchat_pal,
+        width = 9, height = 20
+    )
+dev.off()
+```
+
+```{r RP CellChat}
+Idents(baseline.data) <- baseline.data$progression_group
+DefaultAssay(baseline.data) <- "RNA_Batch_Corrected"
+options(stringsAsFactors = FALSE)
+
+# Create object
+RP <- subset(x = baseline.data, idents = c("RP"))
+Idents(RP) <- RP$CellChat
+RP.cellchat <- createCellChat(RP, group.by = "CellChat")
+rm(RP)
+
+# Set database for signaling
+RP.cellchat@DB <- CellChatDB
+
+# Pre-processing
+RP.cellchat <- subsetData(RP.cellchat)
+RP.cellchat <- identifyOverExpressedGenes(RP.cellchat)
+RP.cellchat <- identifyOverExpressedInteractions(RP.cellchat)
+
+# Compute the communication probability and infer cellular communication network
+RP.cellchat <- computeCommunProb(RP.cellchat)
+RP.cellchat <- filterCommunication(RP.cellchat, min.cells = 10)
+RP.df <- subsetCommunication(RP.cellchat)
+
+# Infer the cell-cell communication at a signaling pathway level
+RP.cellchat <- computeCommunProbPathway(RP.cellchat)
+
+# Calculate the aggregated cell-cell communication network
+RP.cellchat <- aggregateNet(RP.cellchat)
+
+# Visualize number of interactions with weights/strengths
+matrix <- as.data.frame(RP.cellchat@net$count)
+matrix[matrix == 0] <- 0.000000001
+matrix
+matrix <- data.matrix(matrix)
+
+png(
+    filename = "CellChat/RP/interaction_number_cord.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_circle(RP.cellchat@net$count,
+    # remove.isolate = T,
+    top = 0.1,
+    arrow.width = 2,
+    arrow.size = 0.5,
+    edge.width.max = 10,
+    weight.scale = T,
+    label.edge = F,
+    color.use = cellchat_pal
+)
+dev.off()
+
+png(
+    filename = "CellChat/RP/interaction_strength_cord.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_circle(RP.cellchat@net$weight,
+    # remove.isolate = T,
+    top = 0.1,
+    arrow.width = 2,
+    arrow.size = 0.5,
+    edge.width.max = 10,
+    weight.scale = T,
+    label.edge = F,
+    color.use = cellchat_pal
+)
+dev.off()
+
+# Save plots of all inferred networks
+pathways.show.all <- RP.cellchat@netP$pathways
+for (i in 1:length(pathways.show.all)) {
+    # Compute and visualize the contribution of each ligand-receptor pair to the overall signaling pathway
+    gg <- netAnalysis_contribution(RP.cellchat,
+        signaling = pathways.show.all[i]
+    )
+    ggsave(paste0("CellChat/RP/L-R/", pathways.show.all[i], "_L-R_contribution.pdf"),
+        plot = gg,
+        width = 13,
+        height = 7,
+        units = "in",
+        dpi = 600
+    )
+}
+
+# Compute and visualize the network centrality scores
+RP.cellchat <- netAnalysis_computeCentrality(RP.cellchat, slot.name = "netP")
+
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+png(
+    filename = "CellChat/RP/signalingRole_scatter.png",
+    width = 5,
+    height = 5,
+    units = "in",
+    res = 500
+)
+netAnalysis_signalingRole_scatter(RP.cellchat, color.use = cellchat_pal)
+dev.off()
+
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+png(
+    filename = "CellChat/RP/signalingRole_heatmap.png",
+    width = 10,
+    height = 12,
+    units = "in",
+    res = 500
+)
+netAnalysis_signalingRole_heatmap(RP.cellchat,
+    pattern = "outgoing", color.use = cellchat_pal,
+    width = 9, height = 20
+) +
+    netAnalysis_signalingRole_heatmap(RP.cellchat,
+        pattern = "incoming", color.use = cellchat_pal,
+        width = 9, height = 20
+    )
+dev.off()
+
+# Specific pathways
+pdf(
+    file = "CellChat/RP/interaction_network_circle_APRIL.pdf",
+    width = 8,
+    height = 8,
+)
+netVisual_individual(RP.cellchat, signaling = "APRIL", layout = "circle", pairLR.use = "TNFSF13 - TNFRSF17", color.use = cellchat_pal, weight.scale = TRUE)
+dev.off()
+```
+
+```{r}
+dir.create("CellChat/NPvRP")
+dir.create("CellChat/GeneExpression")
+```
+
+```{r NPvRP CellChat}
+# Merge groups
+Object.list <- list(NP = NP.cellchat, RP = RP.cellchat)
+cellchatNPvRP <- mergeCellChat(Object.list, add.names = names(Object.list))
+cellchatNPvRP@idents <- factor(cellchatNPvRP@idents, levels = c(levels(baseline.data$CellChat)))
+cellchatNPvRP@idents$NP <- factor(cellchatNPvRP@idents[["NP"]], levels = c(levels(baseline.data$CellChat)))
+cellchatNPvRP@idents$RP <- factor(cellchatNPvRP@idents[["RP"]], levels = c(levels(baseline.data$CellChat)))
+cellchatNPvRP@idents$joint <- factor(cellchatNPvRP@idents[["joint"]], levels = c(levels(baseline.data$CellChat)))
+
+# Compare the total number of interactions and interaction strength
+gg1 <- compareInteractions(cellchatNPvRP, show.legend = F, group = c(1, 2))
+gg2 <- compareInteractions(cellchatNPvRP, show.legend = F, group = c(1, 2), measure = "weight")
+ggsave("CellChat/NPvRP/InteractionStrength_Barplots.png",
+    gg1 + gg2,
+    width = 5,
+    height = 5,
+    dpi = 300
+)
+
+# Differential number of interactions or interaction strength among different cell populations
+png("CellChat/NPvRP/overall_strength_cord.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_diffInteraction(cellchatNPvRP,
+    measure = "weight",
+    color.use = cellchat_pal,
+    top = 0.05,
+    weight.scale = TRUE,
+    vertex.size.max = 10,
+    edge.width.max = 15,
+    arrow.width = 1.5,
+    arrow.size = 1.1,
+    label.edge = F
+)
+dev.off()
+
+png("CellChat/NPvRP/overall_number_cords.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_diffInteraction(cellchatNPvRP,
+    color.use = cellchat_pal,
+    top = 0.05,
+    weight.scale = TRUE,
+    vertex.size.max = 10,
+    edge.width.max = 15,
+    arrow.width = 1.5,
+    arrow.size = 1.1,
+    label.edge = F
+)
+dev.off()
+
+# Interaction heatmaps compared
+png("CellChat/NPvRP/netVisual_heatmap.png",
+    width = 6,
+    height = 6,
+    units = "in",
+    res = 500
+)
+netVisual_heatmap(cellchatNPvRP, color.use = cellchat_pal)
+dev.off()
+
+# Total number of interactions compared
+png("CellChat/NPvRP/netVisual_circle_total_interactions_no.png",
+    width = 20,
+    height = 15,
+    units = "in",
+    res = 500
+)
+weight.max <- getMaxWeight(Object.list, attribute = c("idents", "count"))
+par(mfrow = c(1, 2), xpd = TRUE)
+for (i in 1:length(Object.list)) {
+    netVisual_circle(Object.list[[i]]@net$count,
+        weight.scale = T, label.edge = F, edge.weight.max = weight.max[2], edge.width.max = 8,
+        color.use = cellchat_pal, top = 0.1, title.name = paste0("Number of interactions - ", names(Object.list)[i])
+    )
+}
+dev.off()
+
+# Total number of interactions compared
+png("CellChat/NPvRP/netVisual_circle_interactions_strength.png",
+    width = 20,
+    height = 15,
+    units = "in",
+    res = 500
+)
+weight.max <- getMaxWeight(Object.list, attribute = c("idents", "weight"))
+par(mfrow = c(1, 2), xpd = TRUE)
+for (i in 1:length(Object.list)) {
+    netVisual_circle(Object.list[[i]]@net$weight,
+        label.edge = F, edge.weight.max = weight.max[2], edge.width.max = 8,
+        color.use = c(cellchat_pal), top = 0.1, title.name = paste0("Strength of interactions - ", names(Object.list)[i])
+    )
+}
+dev.off()
+
+# Dimensional reduction
+num.link <- sapply(Object.list, function(x) {
+    rowSums(x@net$count) + colSums(x@net$count) - diag(x@net$count)
+})
+weight.MinMax <- c(min(num.link), max(num.link))
+gg <- list()
+for (i in 1:length(Object.list)) {
+    gg[[i]] <- netAnalysis_signalingRole_scatter(Object.list[[i]], title = names(Object.list)[i], weight.MinMax = weight.MinMax, color.use = cellchat_pal)
+}
+png(paste0("CellChat/NPvRP/netAnalysis_signalingRole_scatter.png"),
+    width = 10,
+    height = 5,
+    units = "in",
+    res = 500
+)
+patchwork::wrap_plots(plots = gg)
+dev.off()
+
+# Changes per cell type
+for (i in c(1:37)) {
+    ident <- paste0(levels(cellchatNPvRP@idents$joint)[i])
+    ggsave(paste0("CellChat/NPvRP/ScatterPlots/netAnalysis_signalingChanges_scatter_", ident, ".png"),
+        netAnalysis_signalingChanges_scatter(cellchatNPvRP, idents.use = ident),
+        width = 6,
+        height = 4,
+        dpi = 400
+    )
+}
+
+# Identify signaling groups based on their functional similarity
+cellchatNPvRP <- computeNetSimilarityPairwise(cellchatNPvRP, type = "functional")
+
+# Identify and visualize the conserved and context-specific signaling pathways
+gg1 <- rankNet(cellchatNPvRP, mode = "comparison", stacked = T, do.stat = TRUE)
+gg2 <- rankNet(cellchatNPvRP, mode = "comparison", stacked = F, do.stat = TRUE)
+gg1 + gg2
+
+# Fix color of text on Y axis
+string <- gg1[["theme"]][["axis.text.y"]][["colour"]]
+string <- str_replace(string, "#00BFC4", "salmon2") # RP
+string <- str_replace(string, "#F8766D", "cornflowerblue") # NP
+string <- str_replace(string, "black", "gray50") # NA
+gg1[["theme"]][["axis.text.y"]][["colour"]] <- string
+
+string <- gg2[["theme"]][["axis.text.y"]][["colour"]]
+string <- str_replace(string, "#00BFC4", "salmon2") # RP
+string <- str_replace(string, "#F8766D", "cornflowerblue") # NP
+string <- str_replace(string, "black", "gray50") # NA
+gg2[["theme"]][["axis.text.y"]][["colour"]] <- string
+
+ggsave("CellChat/NPvRP/relative_information_flow.png",
+    (gg1 +
+        scale_fill_manual(values = c("salmon2", "cornflowerblue")) +
+        geom_hline(yintercept = 0.5, linetype = "dashed", color = "white", size = 0.5) +
+        labs(fill = "") +
+        theme(
+            legend.position = "none",
+            axis.title.x = element_text(vjust = -1)
+        )) +
+        (gg2 +
+            scale_fill_manual(values = c("salmon2", "cornflowerblue")) +
+            labs(fill = "") +
+            theme(
+                legend.position = "right",
+                axis.title.x = element_text(vjust = -1)
+            )),
+    width = 7,
+    height = 10,
+    scale = 1.1,
+    dpi = 600
+)
+
+# Compare outgoing and incoming signaling associated with each cell population
+i <- 1
+pathway.union <- union(Object.list[[i]]@netP$pathways, Object.list[[i + 1]]@netP$pathways)
+pathway.inter <- intersect(Object.list[[i]]@netP$pathways, Object.list[[i + 1]]@netP$pathways)
+
+# Incoming signaling patterns RP
+ht1 <- netAnalysis_signalingRole_heatmap(Object.list[[i]], pattern = "incoming", signaling = pathway.inter, title = names(Object.list)[i], width = 9, height = 20, color.heatmap = "Blues", color.use = cellchat_pal)
+ht1@right_annotation <- NULL
+png("CellChat/NPvRP/netAnalysis_signalingRole_heatmap_incoming_RP.png",
+    width = 7,
+    height = 10,
+    units = "in",
+    res = 500
+)
+draw(ht1)
+dev.off()
+
+# Incoming signaling patterns NP
+ht2 <- netAnalysis_signalingRole_heatmap(Object.list[[i + 1]], pattern = "incoming", signaling = pathway.inter, title = names(Object.list)[i + 1], width = 9, height = 20, color.heatmap = "Purples", color.use = cellchat_pal)
+ht2@right_annotation <- NULL
+png("CellChat/NPvRP/netAnalysis_signalingRole_heatmap_incoming_NP.png",
+    width = 7,
+    height = 10,
+    units = "in",
+    res = 500
+)
+draw(ht2)
+dev.off()
+
+# Combine heatmaps (incoming)
+RP <- ht1@matrix %>% replace(is.na(.), 0)
+NP <- ht2@matrix %>% replace(is.na(.), 0)
+comb <- t(NP - RP)
+col <- colorRamp2(c(-1, -0.4, 0, 0.4, 1), c("dodgerblue4", "cornflowerblue", "white", "salmon2", "salmon3"))
+anno <- colorRamp2(c(1:43), cellchat_pal)
+comb <- Heatmap(comb,
+    col = col,
+    cluster_rows = F,
+    cluster_columns = F,
+    name = "Incoming Signaling (R)",
+    heatmap_legend_param = list(seg.len = 0),
+    row_names_side = "left",
+    left_annotation = rowAnnotation(
+        show_annotation_name = F,
+        foo = anno_simple(
+            x = c(1:43),
+            col = anno
+        ),
+        annotation_height = unit(0.4, "cm")
+    )
+)
+png("CellChat/NPvRP/comb_heatmap_incoming.png",
+    width = 14,
+    height = 8,
+    units = "in",
+    res = 500
+)
+draw(comb)
+dev.off()
+
+# Outgoing signaling patterns RP
+ht1 <- netAnalysis_signalingRole_heatmap(Object.list[[i]], pattern = "outgoing", signaling = pathway.inter, title = names(Object.list)[i], width = 9, height = 20, color.heatmap = "Blues", color.use = cellchat_pal)
+ht1@right_annotation <- NULL
+png("CellChat/NPvRP/netAnalysis_signalingRole_heatmap_outgoing_RP.png",
+    width = 7,
+    height = 10,
+    units = "in",
+    res = 500
+)
+draw(ht1)
+dev.off()
+
+# Outgoing signaling patterns NP
+ht2 <- netAnalysis_signalingRole_heatmap(Object.list[[i + 1]], pattern = "outgoing", signaling = pathway.inter, title = names(Object.list)[i + 1], width = 9, height = 20, color.heatmap = "Purples", color.use = cellchat_pal)
+ht2@right_annotation <- NULL
+png("CellChat/NPvRP/netAnalysis_signalingRole_heatmap_outgoing_NP.png",
+    width = 7,
+    height = 10,
+    units = "in",
+    res = 500
+)
+draw(ht2)
+dev.off()
+
+# Combine heatmaps (outgoing)
+RP <- ht1@matrix %>% replace(is.na(.), 0)
+NP <- ht2@matrix %>% replace(is.na(.), 0)
+comb <- t(NP - RP)
+col <- colorRamp2(c(-1, -0.4, 0, 0.4, 1), c("dodgerblue4", "cornflowerblue", "white", "salmon2", "salmon3"))
+anno <- colorRamp2(c(1:43), cellchat_pal)
+comb <- Heatmap(comb,
+    col = col,
+    cluster_rows = F,
+    cluster_columns = F,
+    name = "Outgoing Signaling (L)",
+    row_title_rot = 270,
+    heatmap_legend_param = list(seg.len = 0),
+    row_names_side = "left",
+    left_annotation = rowAnnotation(
+        show_annotation_name = F,
+        foo = anno_simple(
+            x = c(1:43),
+            col = anno
+        ),
+        annotation_height = unit(0.4, "cm")
+    )
+)
+png("CellChat/NPvRP/comb_heatmap_outgoing.png",
+    width = 14,
+    height = 9,
+    units = "in",
+    res = 500
+)
+draw(comb)
+dev.off()
+
+# Overall signaling patterns RP
+ht1 <- netAnalysis_signalingRole_heatmap(Object.list[[i]], pattern = "all", signaling = pathway.inter, title = names(Object.list)[i], width = 9, height = 20, color.heatmap = "Blues", color.use = cellchat_pal)
+ht1@right_annotation <- NULL
+png("CellChat/NPvRP/netAnalysis_signalingRole_heatmap_overall_RP.png",
+    width = 7,
+    height = 10,
+    units = "in",
+    res = 500
+)
+draw(ht1)
+dev.off()
+
+# Overall signaling patterns NP
+ht2 <- netAnalysis_signalingRole_heatmap(Object.list[[i + 1]], pattern = "all", signaling = pathway.inter, title = names(Object.list)[i + 1], width = 9, height = 20, color.heatmap = "Purples", color.use = cellchat_pal)
+ht2@right_annotation <- NULL
+png("CellChat/NPvRP/netAnalysis_signalingRole_heatmap_overall_NP.png",
+    width = 7,
+    height = 10,
+    units = "in",
+    res = 500
+)
+draw(ht2)
+dev.off()
+
+# Combine heatmaps
+RP <- ht1@matrix %>% replace(is.na(.), 0)
+NP <- ht2@matrix %>% replace(is.na(.), 0)
+comb <- t(NP - RP)
+col <- colorRamp2(c(-1, -0.4, 0, 0.4, 1), c("dodgerblue4", "cornflowerblue", "white", "salmon2", "salmon3"))
+anno <- colorRamp2(c(1:43), cellchat_pal)
+comb <- Heatmap(comb,
+    col = col,
+    cluster_rows = F,
+    cluster_columns = F,
+    name = "Overall Signaling",
+    row_title_rot = 270,
+    heatmap_legend_param = list(seg.len = 0),
+    row_names_side = "left",
+    left_annotation = rowAnnotation(
+        show_annotation_name = F,
+        foo = anno_simple(
+            x = c(1:43),
+            col = anno
+        ),
+        annotation_height = unit(0.4, "cm")
+    )
+)
+png("CellChat/NPvRP/comb_heatmap.png",
+    width = 13,
+    height = 9,
+    units = "in",
+    res = 500
+)
+draw(comb)
+dev.off()
+
+# Identify dysfunctional signaling by comparing the communication probabilities
+netVisual_bubble(cellchatNPvRP, sources.use = 4, targets.use = c(1:13), comparison = c(1, 2), angle.x = 45)
+# Combined
+gg1 <- netVisual_bubble(cellchatNPvRP, sources.use = c(1:43), targets.use = c(1:43), comparison = c(1, 2), title.name = "Increased signaling in RP", angle.x = 45, remove.isolate = T, thresh = 0.01, max.dataset = 1)
+gg2 <- netVisual_bubble(cellchatNPvRP, sources.use = c(1:43), targets.use = c(1:43), comparison = c(1, 2), title.name = "Decreased signaling in RP", angle.x = 45, remove.isolate = T, thresh = 0.01, max.dataset = 1)
+ggsave("CellChat/NPvRP/netVisual_bubble_communication_probabilities.png",
+    gg1 + theme(legend.position = "none") +
+        gg2,
+    width = 10,
+    height = 8,
+    dpi = 400
+)
+
+# Specific clusters
+nkt.pathways <- data_frame(pathways = cellchatNPvRP@netP[["RP"]][["pathways"]])
+nkt.pathways <- nkt.pathways %>% filter(!grepl("MHC", pathways), !grepl("MIF", pathways), !grepl("CD99", pathways))
+
+png(
+    filename = "CellChat/NPvRP/netVisual_bubble_Myeloid12.png",
+    width = 12,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_bubble(cellchatNPvRP,
+    sources.use = 32, targets.use = c(1:43), signaling = c(nkt.pathways$pathways),
+    remove.isolate = TRUE, thresh = 0.05, comparison = c(1, 2)
+)
+dev.off()
+
+png(
+    filename = "CellChat/NPvRP/netVisual_bubble_CD8-Teff-HLA.png",
+    width = 13,
+    height = 8,
+    units = "in",
+    res = 500
+)
+netVisual_bubble(cellchatNPvRP,
+    sources.use = 19, targets.use = c(1:43), signaling = c(nkt.pathways$pathways),
+    remove.isolate = TRUE, thresh = 0.05, comparison = c(1, 2)
+)
+dev.off()
+
+png(
+    filename = "CellChat/NPvRP/netVisual_bubble_Myeloid12_Bcells.png",
+    width = 4,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_bubble(cellchatNPvRP, sources.use = 32, targets.use = c(1:3), remove.isolate = TRUE, thresh = 0.05, comparison = c(1, 2), color.text = group_pal)
+dev.off()
+
+png(
+    filename = "CellChat/NPvRP/netVisual_bubble_Myeloid12_NKTcompartment.png",
+    width = 10,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_bubble(cellchatNPvRP,
+    sources.use = 32, targets.use = c(4:27), signaling = c(nkt.pathways$pathways),
+    remove.isolate = TRUE, thresh = 0.01, comparison = c(1, 2), color.text = group_pal
+)
+dev.off()
+
+myeloid.pathways <- data_frame(pathways = cellchatNPvRP@netP[["RP"]][["pathways"]])
+myeloid.pathways <- myeloid.pathways %>% filter(!grepl("MHC", pathways))
+png(
+    filename = "CellChat/NPvRP/netVisual_bubble_Myeloid12_Myeloid.png",
+    width = 8,
+    height = 10,
+    units = "in",
+    res = 500
+)
+netVisual_bubble(cellchatNPvRP,
+    sources.use = 32, targets.use = c(28:43), signaling = c(nkt.pathways$pathways),
+    remove.isolate = TRUE, thresh = 0.01, comparison = c(1, 2), color.text = group_pal
+)
+dev.off()
+```
+
+```{r Marker Search}
+ggsave("CellChat/GeneExpression/DotPlot_CHEMERIN.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        group.by = "CellChat",
+        features = c("RARRES2", "CMKLR1"),
+        assay = "RNA",
+        cols = rev(group_pal),
+        col.min = 0.1,
+        dot.min = 0.01,
+        dot.scale = 10,
+        scale.by = "size"
+    ) +
+        labs(x = "", y = "", color = "Average Expression") +
+        coord_flip() +
+        theme(
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.justification = "top",
+            axis.text.x = element_text(
+                size = 12,
+                angle = 45,
+                hjust = 1,
+                margin = margin(t = 2, b = 0, unit = "pt")
+            )
+        ),
+    width = 15,
+    height = 3,
+    scale = 2.0,
+    dpi = 600,
+    bg = "white"
+)
+
+ggsave("CellChat/GeneExpression/DotPlot_IL16.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        features = c("IL16", "CD4"),
+        group.by = "CellChat",
+        assay = "RNA",
+        cols = rev(group_pal),
+        col.min = 0.1,
+        dot.min = 0.01,
+        dot.scale = 10,
+        scale.by = "size"
+    ) +
+        labs(x = "", y = "", color = "Average Expression") +
+        coord_flip() +
+        theme(
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.justification = "top",
+            axis.text.x = element_text(
+                size = 12,
+                angle = 45,
+                hjust = 1,
+                margin = margin(t = 2, b = 0, unit = "pt")
+            )
+        ),
+    width = 15,
+    height = 3,
+    scale = 2.0,
+    dpi = 600,
+    bg = "white"
+)
+
+ggsave("CellChat/GeneExpression/DotPlot_APRIL-BAFF.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        features = c("TNFSF13", "TNFSF13B", "TNFRSF13B", "TNFRSF13C"),
+        group.by = "CellChat",
+        assay = "RNA",
+        cols = rev(group_pal),
+        col.min = 0.1,
+        dot.min = 0.01,
+        dot.scale = 10,
+        scale.by = "size"
+    ) +
+        labs(x = "", y = "", color = "Average Expression") +
+        coord_flip() +
+        theme(
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.justification = "top",
+            axis.text.x = element_text(
+                size = 12,
+                angle = 45,
+                hjust = 1,
+                margin = margin(t = 2, b = 0, unit = "pt")
+            )
+        ),
+    width = 15,
+    height = 3,
+    scale = 2.0,
+    dpi = 600,
+    bg = "white"
+)
+
+ggsave("CellChat/GeneExpression/DotPlot_MIF.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        features = c("MIF", "CD74", "CD44", "CXCR4"),
+        group.by = "CellChat",
+        assay = "RNA",
+        cols = rev(group_pal),
+        col.min = 0.1,
+        dot.min = 0.01,
+        dot.scale = 10,
+        scale.by = "size"
+    ) +
+        labs(x = "", y = "", color = "Average Expression") +
+        coord_flip() +
+        theme(
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.justification = "top",
+            axis.text.x = element_text(
+                size = 12,
+                angle = 45,
+                hjust = 1,
+                margin = margin(t = 2, b = 0, unit = "pt")
+            )
+        ),
+    width = 15,
+    height = 3,
+    scale = 2.0,
+    dpi = 600,
+    bg = "white"
+)
+
+ggsave("CellChat/GeneExpression/DotPlot_SEMA4.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        features = c("SEMA4A", "SEMA4D", "CD274", "PDCD1", "CTLA4", "LAG3", "HAVCR2", "CD72"),
+        group.by = "CellChat",
+        assay = "RNA",
+        cols = rev(group_pal),
+        col.min = 0.1,
+        dot.min = 0.01,
+        dot.scale = 10,
+        scale.by = "size"
+    ) +
+        labs(x = "", y = "", color = "Average Expression") +
+        coord_flip() +
+        theme(
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.justification = "top",
+            axis.text.x = element_text(
+                size = 12,
+                angle = 45,
+                hjust = 1,
+                margin = margin(t = 2, b = 0, unit = "pt")
+            )
+        ),
+    width = 15,
+    height = 3,
+    scale = 2.0,
+    dpi = 600,
+    bg = "white"
+)
+
+ggsave("CellChat/GeneExpression/DotPlot_CD86.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        features = c("CD86", "CTLA4", "CD28", "NRF2", "NR2F1", "SOX9"),
+        group.by = "CellChat",
+        assay = "RNA",
+        cols = rev(group_pal),
+        col.min = 0.1,
+        dot.min = 0.01,
+        dot.scale = 10,
+        scale.by = "size"
+    ) +
+        labs(x = "", y = "", color = "Average Expression") +
+        coord_flip() +
+        theme(
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.justification = "top",
+            axis.text.x = element_text(
+                size = 12,
+                angle = 45,
+                hjust = 1,
+                margin = margin(t = 2, b = 0, unit = "pt")
+            )
+        ),
+    width = 15,
+    height = 3,
+    scale = 2.0,
+    dpi = 600,
+    bg = "white"
+)
+
+ggsave("CellChat/GeneExpression/DotPlot_Cholesterol.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        features = c("LIPA", "RORA"),
+        group.by = "CellChat",
+        assay = "RNA",
+        cols = rev(group_pal),
+        col.min = 0.1,
+        dot.min = 0.01,
+        dot.scale = 10,
+        scale.by = "size"
+    ) +
+        labs(x = "", y = "", color = "Average Expression") +
+        coord_flip() +
+        theme(
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.justification = "top",
+            axis.text.x = element_text(
+                size = 12,
+                angle = 45,
+                hjust = 1,
+                margin = margin(t = 2, b = 0, unit = "pt")
+            )
+        ),
+    width = 15,
+    height = 3,
+    scale = 2.0,
+    dpi = 600,
+    bg = "white"
+)
+
+ggsave("CellChat/GeneExpression/DotPlot_CLEC.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        features = c("CD69", "CLEC2B", "CLEC2D", "KLRB1"),
+        group.by = "CellChat",
+        assay = "RNA",
+        cols = rev(group_pal),
+        col.min = 0.1,
+        dot.min = 0.01,
+        dot.scale = 10,
+        scale.by = "size"
+    ) +
+        labs(x = "", y = "", color = "Average Expression") +
+        coord_flip() +
+        theme(
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.justification = "top",
+            axis.text.x = element_text(
+                size = 12,
+                angle = 45,
+                hjust = 1,
+                margin = margin(t = 2, b = 0, unit = "pt")
+            )
+        ),
+    width = 15,
+    height = 3,
+    scale = 2.0,
+    dpi = 600,
+    bg = "white"
+)
+
+ggsave("CellChat/GeneExpression/DotPlot_ICAM.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        features = c("ICAM1", "ICAM2", "IL10", "ITGAM", "ITGAL", "ITGB2", "SPN", "ITGAX", "CD69", "FCGR3A"),
+        group.by = "CellChat",
+        assay = "RNA",
+        cols = rev(group_pal),
+        col.min = 0.1,
+        dot.min = 0.01,
+        dot.scale = 10,
+        scale.by = "size"
+    ) +
+        labs(x = "", y = "", color = "Average Expression") +
+        coord_flip() +
+        theme(
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.justification = "top",
+            axis.text.x = element_text(
+                size = 12,
+                angle = 45,
+                hjust = 1,
+                margin = margin(t = 2, b = 0, unit = "pt")
+            )
+        ),
+    width = 15,
+    height = 3,
+    scale = 2.0,
+    dpi = 600,
+    bg = "white"
+)
+
+ggsave("CellChat/GeneExpression/DotPlot_ADGRG1.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        features = c("ZNF683", "ADGRG1", "CD81", "GZMB"),
+        group.by = "CellChat",
+        assay = "RNA",
+        cols = rev(group_pal),
+        col.min = 0.1,
+        dot.min = 0.01,
+        dot.scale = 10,
+        scale.by = "size"
+    ) +
+        labs(x = "", y = "", color = "Average Expression") +
+        coord_flip() +
+        theme(
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.justification = "top",
+            axis.text.x = element_text(
+                size = 12,
+                angle = 45,
+                hjust = 1,
+                margin = margin(t = 2, b = 0, unit = "pt")
+            )
+        ),
+    width = 15,
+    height = 3,
+    scale = 2.0,
+    dpi = 600,
+    bg = "white"
+)
+
+ggsave("CellChat/GeneExpression/DotPlot_IFN.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        features = c("IFNG", "IFNGR1", "IFNGR2"),
+        group.by = "CellChat",
+        assay = "RNA",
+        cols = rev(group_pal),
+        col.min = 0.1,
+        dot.min = 0.01,
+        dot.scale = 10,
+        scale.by = "size"
+    ) +
+        labs(x = "", y = "", color = "Average Expression") +
+        coord_flip() +
+        theme(
+            legend.position = "right",
+            legend.direction = "vertical",
+            legend.justification = "top",
+            axis.text.x = element_text(
+                size = 12,
+                angle = 45,
+                hjust = 1,
+                margin = margin(t = 2, b = 0, unit = "pt")
+            )
+        ),
+    width = 15,
+    height = 3,
+    scale = 2.0,
+    dpi = 600,
+    bg = "white"
+)
+```
+
+
+
+# SCENIC
+```{r SCENIC Module Scores}
+IRF7 <- c("HES4", "ISG15", "TXNIP", "EVL", "CD4", "OPTN", "NEXN", "LFNG", "SAMD9L", "STAT1", "OAS3", "UBE2L6", "GBP1", "IFIH1", "TCF4", "APOBEC3A", "NT5C3A", "CAMK1", "USP18", "MX1", "RABGAP1L", "XAF1", "RSAD2", "CMPK2", "VAMP5", "HELZ2", "HERC6", "IFIT2", "IRF7", "IFIT3", "SPATS2L", "PARP14", "PPM1K", "ATP10A", "ISG20", "DDX60", "RNF213", "TNNT1", "IFITM1", "MX2", "STAT2", "TTC39B", "MT1X", "PLEKHO1", "SLFN5", "LGALS3", "SMCHD1", "DDX58", "IFIT5", "HERC5", "TAP1", "APOL6", "IFITM3", "GBP4", "MYOF", "IFIT1", "SAMD9", "DTX3L", "IFI30", "PARP9", "TNFSF10", "CD2AP", "OAS2", "ETV7", "WARS", "SAMD4A", "TLR7", "EPSTI1", "DDX60L", "XRN1", "OASL", "EIF2AK2", "ATF5", "PNPT1", "TRIM56", "SERPING1", "IFITM2", "FCGR1A", "PRR5L", "PLA2G7", "LGALS3BP", "LILRA4", "TRIM22", "IFI44", "LPAR6", "MAP3K7CL", "SP110", "CD52", "SIGLEC1", "SLFN12", "FCGR1B", "MEF2C", "RHOC", "JAML", "AIF1", "GPBAR1", "HLA-DMB", "ITM2B", "S100A10", "PLSCR1", "PGAP1", "PTP4A3", "TUBA1A")
+
+IRF1 <- c("TNFAIP3", "NFKBIZ", "NFKBIA", "NFKBID", "ARL5B", "BIRC3", "CXCL2", "NFKB2", "HELZ2", "PID1", "IFIH1", "LPAR2", "CCL4L2", "CCL4", "CXCL8", "CHMP1B", "TWISTNB", "CD83", "WARS", "IER3", "ZBTB7A", "RNF213", "NR4A2", "SMCHD1", "PTGIR", "GBP1", "RABGAP1L", "PPP1R15B", "SAT1", "JAK3", "COQ7", "CCNL1", "GBP4", "PPP1R15A", "FFAR2", "LFNG", "ADGRE2", "NEAT1", "TLR7", "HLA-DMB", "FAM8A1", "PLK3", "PTCH2", "LDLR", "KLF10", "VEGFA", "PLEK", "AP1S2", "NLRP3", "RIPK2", "DMXL2", "STAT1", "FCGR1B", "FCGR1A", "JAML", "BEST1", "ISG15", "STAT2", "XRN1", "SOD2", "ITPRIP", "PLEKHG2", "APOL6", "DTX3L", "EREG", "GPR155", "ATF5", "VMP1", "PLEKHO1", "PARP9")
+
+KLF9 <- c("SPRY1", "JDP2", "FKBP5", "KDM5B", "TOB1", "NFIA", "TLE1", "NFIL3", "IRS2", "B3GNT5", "UGCG")
+
+baseline.data <- AddModuleScore(baseline.data, features = list(IRF7), name = "IRF7_ModuleScore")
+baseline.data <- AddModuleScore(baseline.data, features = list(IRF1), name = "IRF1_ModuleScore")
+baseline.data <- AddModuleScore(baseline.data, features = list(KLF9), name = "KLF9_ModuleScore")
+
+
+ggsave("GeneExpression/DotPlot_SCENIC_ModuleScores.png",
+    DotPlot(
+        object = baseline.data,
+        split.by = "progression_group",
+        features = c(
+            "KLF9_ModuleScore1", "KLF9", "NFKBIA", "NFKBIZ", "TNFAIP3", "NFKB1",
+            "CEBPB", "KLF10", "FKBP5",
+            "IFNg_ModuleScore1", "IFNG", "IFNGR1", "IFNGR2",
+            "IFNa_ModuleScore1", "IFNAR2",
+            "IRF1_ModuleScore1", "IRF1",
+            "IRF7_ModuleScore1", "IRF7",
+            "THBS1", "CD47", "CD36"
+        ),
+        assay = "RNA",
+        cols = rev(group_pal),
+        # cols = dot,
+        col.min = 0,
+        dot.scale = 12,
+        dot.min = 0,
+        scale.by = "size"
+    ) +
+        theme(
+            legend.position = "top",
+            legend.justification = "right",
+            axis.text.x = element_text(
+                size = 10,
+                angle = 45,
+                vjust = 1,
+                hjust = 1,
+                margin = margin(t = 5, unit = "pt")
+            )
+        ),
+    width = 6,
+    height = 12,
+    scale = 1.5,
+    dpi = 600,
+    bg = "white"
+)
+```
+
+```{r Figure 5 Feature Plots}
+SCENIC.meta <- read.csv("MYRED_auc.csv", row.names = 1)
+SCENIC.data <- subset(merged, cells = c(rownames(SCENIC.meta)))
+length(rownames(SCENIC.data@meta.data)) == length(rownames(SCENIC.meta))
+SCENIC.data <- AddMetaData(SCENIC.data, SCENIC.meta)
+Idents(SCENIC.data) <- SCENIC.data$subcluster_V03072023
+
+# Feature plot
+ggsave("GeneExpression/FeaturePlot_SCENIC_E2F1_Regulon.png",
+    FeaturePlot(SCENIC.data,
+        features = c("E2F1..."),
+        pt.size = 2, order = T, label = T, label.size = 6, reduction = "umap.sub",
+    ) +
+        labs(x = "UMAP1", y = "UMAP2", title = "E2F1 Regulon") +
+        scale_color_gradientn(colors = rev(brewer.pal(n = 12, "Spectral")), limits = c(-0.5, 2.5)) +
+        theme_prism() +
+        scale_y_continuous(limits = c(-6, 5)) +
+        scale_x_continuous(limits = c(-8, 12)) +
+        theme(
+            legend.title = element_text(size = 14),
+            legend.text = element_text(size = 14),
+            legend.position = c(0.9, 0.2),
+            legend.background = element_rect(fill = "white", linewidth = 0)
+        ),
+    width = 6,
+    height = 6
+)
+
+ggsave("GeneExpression/FeaturePlot_SCENIC_IRF7_Regulon.png",
+    FeaturePlot(SCENIC.data,
+        features = c("IRF7..."),
+        pt.size = 2, order = T, label = T, label.size = 6, reduction = "umap.sub"
+    ) +
+        labs(x = "UMAP1", y = "UMAP2", title = "IRF7 Regulon") +
+        scale_color_gradientn(colors = rev(brewer.pal(n = 12, "Spectral")), "") +
+        theme_prism() +
+        scale_y_continuous(limits = c(-6, 5)) +
+        scale_x_continuous(limits = c(-8, 12)) +
+        theme(
+            legend.title = element_text(size = 14),
+            legend.text = element_text(size = 14),
+            legend.position = c(0.9, 0.2),
+            legend.background = element_rect(fill = "white", linewidth = 0)
+        ),
+    width = 6,
+    height = 6
+)
+
+ggsave("GeneExpression/FeaturePlot_SCENIC_KLF9_Regulon.png",
+    FeaturePlot(SCENIC.data,
+        features = c("CEBPB..."),
+        pt.size = 2, order = T, label = T, label.size = 6, reduction = "umap.sub"
+    ) +
+        labs(x = "UMAP1", y = "UMAP2", title = "KLF9 Regulon") +
+        scale_color_gradientn(colors = rev(brewer.pal(n = 12, "Spectral")), "") +
+        theme_prism() +
+        scale_y_continuous(limits = c(-6, 5)) +
+        scale_x_continuous(limits = c(-8, 12)) +
+        theme(
+            legend.title = element_text(size = 14),
+            legend.text = element_text(size = 14),
+            legend.position = c(0.9, 0.2),
+            legend.background = element_rect(fill = "white", linewidth = 0)
+        ),
+    width = 6,
+    height = 6
+)
+```
+
+```{r}
+
+```
