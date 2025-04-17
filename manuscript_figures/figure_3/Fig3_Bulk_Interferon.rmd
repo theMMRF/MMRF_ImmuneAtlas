@@ -1,0 +1,643 @@
+---
+title: "Bulk RNA Analysis"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Setup
+```{r init}
+source("source/Helper_Functions/pdf_and_png.R")
+output <- file.path("output", "BulkRNA_misc_GSVA")
+dir.create(output, showWarnings = F, recursive = T)
+```
+
+```{r}
+BULK_file <- "/opt/megaseq-data/wcpilch/MMRF-ImmuneAtlas-Analysis-Sync/data/Bulk/COUNTS_Gene_Based_MMRF_CoMMpass_IA22_star_geneUnstranded_counts.tsv.gz"
+
+counts <- read.delim(BULK_file, row.names = "Gene")
+counts <- counts[1:60623, ] # remove qc lines
+sample_list <- colnames(counts)
+```
+
+```{r}
+visit_id_output_dir <- "/opt/pmedseq-data/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/data/metadata_092424/all_commpass_per_visit/"
+public_id_output_dir <- "/opt/pmedseq-data/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/data/metadata_092424/all_commpass_per_pat/"
+public_id_output_name <- "092424_per_pat.rds"
+visit_id_output_name <- "092424_per_visit.rds"
+
+visitMD <- readRDS(file.path(visit_id_output_dir, visit_id_output_name))
+patMD <- readRDS(file.path(public_id_output_dir, public_id_output_name))
+```
+
+```{r}
+BM_or_PB <- unlist(lapply(sample_list, function(x) substr(x, 13, 14)))
+pos_or_neg <- unlist(lapply(sample_list, function(x) substr(x, 21, 23)))
+visit_id <- unlist(lapply(sample_list, function(x) substr(x, 1, 11)))
+public_id <- unlist(lapply(sample_list, function(x) substr(x, 1, 9)))
+
+# baseline <- merged |> subset(subset = (VJ_INTERVAL == "Baseline"))
+```
+
+```{r}
+md_bulk <- data.frame(bulk_id = sample_list, public_id = public_id, d_visit_specimen_id = visit_id, tissue_type = BM_or_PB)
+md_bulk <- dplyr::filter(md_bulk, tissue_type == "BM")
+
+md_bulk <- dplyr::left_join(md_bulk, patMD, by = "public_id")
+md_bulk <- dplyr::left_join(md_bulk, visitMD, by = c("public_id", "d_visit_specimen_id"))
+rownames(md_bulk) <- md_bulk$bulk_id
+
+counts_select <- counts[, md_bulk$bulk_id]
+```
+
+```{r}
+copy_number_file <- "/opt/localdata/wcpilch/Projects/CoMMpass_Chromothripsis_Calculation/data/Copy_Number_Estimates/MMRF_CoMMpass_IA21_genome_gatk_cna_PerGene_LargestOverlap.tsv"
+cn_largest_overlap <- read.table(copy_number_file, header = T, row.names = "Gene")
+```
+
+
+```{r}
+library("biomaRt")
+mart <- useDataset("hsapiens_gene_ensembl", useMart("ensembl"))
+ensembl_grch37 <- useEnsembl(
+    biomart = "genes",
+    dataset = "hsapiens_gene_ensembl",
+    version = "GRCh37"
+)
+
+genes <- rownames(counts)
+
+G_list <- getBM(filters = "ensembl_gene_id", attributes = c("ensembl_gene_id", "hgnc_symbol"), values = rownames(counts), mart = mart)
+G_list_grch37 <- getBM(filters = "ensembl_gene_id", attributes = c("ensembl_gene_id", "hgnc_symbol"), values = rownames(counts), mart = ensembl_grch37)
+
+table(G_list$ensembl_gene_id %in% G_list_grch37$ensembl_gene_id)
+table(G_list_grch37$ensembl_gene_id %in% G_list$ensembl_gene_id)
+
+
+library(reshape2)
+G_list <- melt(G_list, id.vars = "ensembl_gene_id")
+
+
+G_list$repeats <- ave(G_list$ensembl_gene_id, G_list$ensembl_gene_id, FUN = seq_along)
+
+G_list <- dcast(G_list, ensembl_gene_id ~ repeats, value.var = "value")
+
+
+colnames(G_list) <- c("ensembl_gene_id", "hgnc_symbol", "hgnc_symbol_alt_1")
+
+library(reshape2)
+G_list_grch37 <- melt(G_list_grch37, id.vars = "ensembl_gene_id")
+
+
+G_list_grch37$repeats <- ave(G_list_grch37$ensembl_gene_id, G_list_grch37$ensembl_gene_id, FUN = seq_along)
+
+G_list_grch37 <- dcast(G_list_grch37, ensembl_gene_id ~ repeats, value.var = "value")
+
+colnames(G_list_grch37) <- c("ensembl_gene_id", "hgnc_symbol", "hgnc_symbol_alt_1", "hgnc_symbol_alt_2", "hgnc_symbol_alt_3")
+
+write.csv(G_list, file.path(output, "grch38_ensembl_allids.csv"))
+write.csv(G_list_grch37, file.path(output, "grch37_ensembl_allids.csv"))
+
+
+G_list <- dplyr::full_join(G_list, G_list_grch37, suffix = c("_GRCh38", "_GRCh37"), by = "ensembl_gene_id")
+write.csv(G_list, file.path(output, "grch38_and_grch37_ensembl_allids.csv"))
+rownames(G_list) <- G_list$ensembl_gene_id
+```
+
+
+
+```{r}
+# g_list_IFN <- G_list |> dplyr::filter(hgnc_symbol %in% c(
+#     "IFI6",
+#     "IFI30",
+#     "IFITM3",
+#     "IFI44L",
+#     "IFITM2",
+#     "S100A4",
+#     "IFI16",
+#     "ISG15",
+#     "STAT1",
+#     "IFI44",
+#     "STAT2",
+#     "APOL6",
+#     "IFIT3",
+#     "IFI35",
+#     "IFIT2",
+#     "JAK2",
+#     "IFI27L2",
+#     "GBP1",
+#     "GBP2",
+#     "IFIT1",
+#     "IFIH1",
+#     "IFITM1",
+#     "GBP4",
+#     "IFI27",
+#     "ISG15",
+#     "MX1",
+#     "OAS1",
+#     "XAF1",
+#     "APOL3",
+#     "IFIT5",
+#     "IFNG"
+# ))
+
+g_list_IFN <- G_list |> dplyr::filter(ensembl_gene_id %in% c(
+    "ENSG00000137959", # "IFI44L",
+    "ENSG00000187608", # "ISG15",
+    "ENSG00000132530", # "XAF1",
+    "ENSG00000126709", # "IFI6",
+    "ENSG00000157601", # "MX1",
+    "ENSG00000160932", # "LY6E",
+    "ENSG00000055332", # "EIF2AK2",
+    "ENSG00000115415", # "STAT1",
+    "ENSG00000183486", # "MX2",
+    "ENSG00000119917", # "IFIT3",
+    "ENSG00000172183", # "ISG20",
+    "ENSG00000089127", # "OAS1",
+    "ENSG00000137965", # "IFI44",
+    "ENSG00000185507", # "IRF7",
+    "ENSG00000185745", # "IFIT1",
+    "ENSG00000111331", # "OAS3",
+    "ENSG00000068079", # "IFI35",
+    "ENSG00000111335", # "OAS2",
+    "ENSG00000165949" # "IFI27"
+))
+
+immune_gs <- list()
+immune_gs[["IFN"]] <- g_list_IFN[["ensembl_gene_id"]]
+```
+
+```{r}
+library(paletteer)
+
+df <- data.frame(
+    palette_name = c("lisa::OskarSchlemmer", "NineteenEightyR::miami1", "LaCroixColoR::Lemon", "LaCroixColoR::Orange", "LaCroixColoR::CranRaspberry", "colorBlindness::Blue2Orange8Steps", "khroma::BuRd"),
+    fill_NP = c(2, 2, 5, 5, 5, 2, 2),
+    fill_RP = c(4, 4, 2, 2, 2, 7, 7),
+    color_NP = c(1, 1, 6, 6, 6, 1, 1),
+    color_RP = c(5, 5, 1, 1, 1, 8, 8),
+    center = c(3, 3, NA, NA, NA, NA, NA)
+)
+
+RP_color_pallette <- "lisa::OskarSchlemmer"
+NP_color_palette <- "LaCroixColoR::Lemon"
+fill_NP <- paletteer_d(NP_color_palette)[[5]] |>
+    as.character() |>
+    substr(1, 7)
+color_NP <- paletteer_d(NP_color_palette)[[6]] |>
+    as.character() |>
+    substr(1, 7)
+
+fill_RP <- paletteer_d(RP_color_pallette)[[4]] |>
+    as.character() |>
+    substr(1, 7)
+color_RP <- paletteer_d(RP_color_pallette)[[5]] |>
+    as.character() |>
+    substr(1, 7)
+```
+
+```{r}
+library(edgeR)
+
+d0 <- DGEList(counts)
+d0 <- calcNormFactors(d0)
+
+cutoff <- 5
+drop <- which(apply(cpm(d0), 1, max) < cutoff)
+d <- d0[-drop, ]
+dim(d) # number of genes left
+
+
+md_bulk_tmp <- md_bulk |> dplyr::filter(VJ_INTERVAL == "Baseline")
+d_select <- d[, md_bulk_tmp$bulk_id]
+```
+
+
+```{r}
+cpm_y <- cpm(d_select, log = TRUE)
+
+
+
+# Run GSVA
+library(GSVA)
+
+
+gbmPar <- gsvaParam(as.matrix(cpm_y),
+    immune_gs,
+    kcdf = "Gaussian" # "Gaussian" for logCPM,logRPKM,logTPM, "Poisson" for counts
+)
+en <- gsva(gbmPar)
+
+
+# en <- gsva(as.matrix(cpm_y), immune_gs)
+```
+
+
+```{r}
+df_counts <- data.frame(IFN_Score = unlist(en["IFN", ]), bulk_id = colnames(en))
+df_counts <- df_counts |> dplyr::left_join(prolif_counts, by = "bulk_id")
+summary(df_counts$IFN_Score)
+```
+
+```{r}
+df_counts <- dplyr::left_join(df_counts, md_bulk_tmp, by = "bulk_id")
+
+df_counts <- df_counts |> dplyr::mutate(tp53_inactivation_state = dplyr::case_when(
+    as.numeric(seqwgs_cp_17p13) < log2(0.4) ~ "COMPLETE",
+    seqwgs_cp_17p13_call == "yes" & tp53_mut_call == "yes" ~ "COMPLETE",
+    seqwgs_cp_17p13_call == "yes" | tp53_mut_call == "yes" ~ "PARTIAL", # NA for one would mean partial, probably okay though
+    seqwgs_cp_17p13_call == "no" & tp53_mut_call == "no" ~ "NONE",
+    is.na(seqwgs_cp_17p13_call) | is.na(tp53_mut_call) ~ NA,
+    .default = "UNHANDLED CASE"
+))
+print("tp53_inactivation_state")
+table(df_counts$tp53_inactivation_state)
+table(df_counts$tp53_inactivation_state, df_counts$seqwgs_cp_17p13_call)
+table(df_counts$tp53_inactivation_state, df_counts$tp53_mut_call)
+table(df_counts$tp53_inactivation_state, df_counts$IMWG_FLAG_tp53)
+
+table(is.na(df_counts$tp53_inactivation_state), is.na(df_counts$seqwgs_cp_17p13_call))
+table(is.na(df_counts$tp53_inactivation_state), is.na(df_counts$tp53_mut_call))
+table(is.na(df_counts$seqwgs_cp_17p13_call), is.na(df_counts$tp53_mut_call))
+table(is.na(df_counts$tp53_inactivation_state), is.na(df_counts$IMWG_FLAG_tp53))
+
+
+df_counts <- df_counts |> dplyr::mutate(IFN_Score_binned = IFN_Score > 0.44549) # 3rd quartile
+print("IFN Score Binned")
+table(df_counts$IFN_Score_binned)
+table(is.na(df_counts$IFN_Score_binned))
+
+df_counts <- df_counts |> dplyr::mutate(IFN_TP53_GROUP = dplyr::case_when(
+    IMWG_FLAG_tp53 & IFN_Score_binned ~ "IFN.p53",
+    !IMWG_FLAG_tp53 & IFN_Score_binned ~ "IFN.WT",
+    IMWG_FLAG_tp53 & !IFN_Score_binned ~ "Norm.p53",
+    !IMWG_FLAG_tp53 & !IFN_Score_binned ~ "Norm.WT",
+    is.na(IMWG_FLAG_tp53) ~ NA,
+    is.na(IFN_Score_binned) ~ "MISSING_IFN_INFORMATION",
+    .default = "UNHANDLED_CASE"
+))
+
+
+print("IFN_TP53_GROUP")
+table(df_counts$IFN_TP53_GROUP)
+table(is.na(df_counts$IFN_TP53_GROUP), is.na(df_counts$IMWG_FLAG_tp53))
+
+df_counts <- df_counts |> dplyr::mutate(seqwgs_1q21_CN_class = dplyr::case_when(
+    seqwgs_cp_1q21_call == "yes" & seqwgs_cp_derived_amp_1q == "yes" ~ "Amp(1q21)",
+    seqwgs_cp_1q21_call == "yes" & seqwgs_cp_derived_amp_1q == "no" ~ "Gain(1q21)", # no yes is not possible
+    seqwgs_cp_1q21_call == "no" & seqwgs_cp_derived_amp_1q == "no" ~ "Normal",
+    is.na(seqwgs_cp_1q21_call) | is.na(seqwgs_cp_derived_amp_1q) ~ NA,
+    .default = "UNHANDLED CASE"
+))
+
+
+print("seqwgs_1q21_CN_class")
+table(df_counts$seqwgs_1q21_CN_class, df_counts$seqwgs_cp_1q21_call)
+table(df_counts$seqwgs_1q21_CN_class, df_counts$seqwgs_cp_derived_amp_1q)
+table(is.na(df_counts$seqwgs_1q21_CN_class), is.na(df_counts$seqwgs_cp_1q21_call))
+
+
+df_counts <- df_counts |> dplyr::mutate(mixed_nsd2_1q21_class = dplyr::case_when(
+    seqwgs_cp_1q21_call == "yes" & nsd2_call == "yes" ~ "NSD2+gain(1q21)",
+    seqwgs_cp_1q21_call == "yes" & nsd2_call == "no" ~ "gain(1q21)", # no yes is not possible
+    seqwgs_cp_1q21_call == "no" & nsd2_call == "yes" ~ "NSD2", # no yes is not possible
+    seqwgs_cp_1q21_call == "no" & nsd2_call == "no" ~ "Normal",
+    is.na(seqwgs_cp_1q21_call) | is.na(nsd2_call) ~ NA,
+    .default = "UNHANDLED CASE"
+))
+
+print("mixed_nsd2_1q21_class")
+table(df_counts$mixed_nsd2_1q21_class, df_counts$nsd2_call)
+table(df_counts$mixed_nsd2_1q21_class, df_counts$seqwgs_cp_1q21_call)
+table(is.na(df_counts$mixed_nsd2_1q21_class), is.na(df_counts$seqwgs_cp_1q21_call))
+table(is.na(df_counts$mixed_nsd2_1q21_class), is.na(df_counts$nsd2_call))
+
+
+
+df_counts <- df_counts |> dplyr::mutate(mixed_1p32_1q21_class = dplyr::case_when(
+    seqwgs_cp_1q21_call == "yes" & seqwgs_cp_cdkn2c_call == "yes" ~ "del(1p32)+gain(1q21)",
+    seqwgs_cp_1q21_call == "yes" & seqwgs_cp_cdkn2c_call == "no" ~ "gain(1q21)", # no yes is not possible
+    seqwgs_cp_1q21_call == "no" & seqwgs_cp_cdkn2c_call == "yes" ~ "del(1p32)", # no yes is not possible
+    seqwgs_cp_1q21_call == "no" & seqwgs_cp_cdkn2c_call == "no" ~ "Normal",
+    is.na(seqwgs_cp_1q21_call) | is.na(seqwgs_cp_cdkn2c_call) ~ NA,
+    .default = "UNHANDLED CASE"
+))
+
+print("mixed_1p32_1q21_class")
+table(df_counts$mixed_1p32_1q21_class, df_counts$mixed_1p32_1q21_class)
+table(df_counts$mixed_1p32_1q21_class, df_counts$seqwgs_cp_1q21_call)
+table(is.na(df_counts$mixed_1p32_1q21_class), is.na(df_counts$seqwgs_cp_1q21_call))
+table(is.na(df_counts$mixed_1p32_1q21_class), is.na(df_counts$mixed_1p32_1q21_class))
+
+
+df_counts <- df_counts |> dplyr::mutate(mixed_tp53_1q21_class = dplyr::case_when(
+    seqwgs_cp_1q21_call == "yes" & IMWG_FLAG_tp53 ~ "TP53+gain(1q21)",
+    seqwgs_cp_1q21_call == "yes" & !IMWG_FLAG_tp53 ~ "gain(1q21)", # no yes is not possible
+    seqwgs_cp_1q21_call == "no" & IMWG_FLAG_tp53 ~ "TP53", # no yes is not possible
+    seqwgs_cp_1q21_call == "no" & !IMWG_FLAG_tp53 ~ "Normal",
+    is.na(seqwgs_cp_1q21_call) | is.na(IMWG_FLAG_tp53) ~ NA,
+    .default = "UNHANDLED CASE"
+))
+
+print("mixed_tp53_1q21_class")
+table(df_counts$mixed_tp53_1q21_class, df_counts$IMWG_FLAG_tp53)
+table(df_counts$mixed_tp53_1q21_class, df_counts$seqwgs_cp_1q21_call)
+table(is.na(df_counts$mixed_tp53_1q21_class), is.na(df_counts$seqwgs_cp_1q21_call))
+table(is.na(df_counts$mixed_tp53_1q21_class), is.na(df_counts$IMWG_FLAG_tp53))
+
+df_counts <- df_counts |> dplyr::mutate(maf_combined_call = dplyr::case_when(
+    maf_call == "yes" | mafa_call == "yes" | mafb_call == "yes" ~ "yes",
+    maf_call == "no" & mafa_call == "no" & mafb_call == "no" ~ "no",
+    is.na(maf_call) | is.na(mafa_call) | is.na(mafb_call) ~ NA,
+    .default = "ERROR"
+))
+
+print("MAF combined call")
+
+table(df_counts$maf_combined_call, df_counts$maf_call)
+table(df_counts$maf_combined_call, df_counts$mafa_call)
+table(df_counts$maf_combined_call, df_counts$mafb_call)
+
+table(is.na(df_counts$maf_combined_call), is.na(df_counts$maf_call))
+table(is.na(df_counts$maf_combined_call), is.na(df_counts$mafa_call))
+table(is.na(df_counts$maf_combined_call), is.na(df_counts$mafb_call))
+
+
+df_counts <- df_counts |> dplyr::mutate(mixed_MAF_1q21_class = dplyr::case_when(
+    seqwgs_cp_1q21_call == "yes" & maf_combined_call == "yes" ~ "MAF/MAFA/MAFB+gain(1q21)",
+    seqwgs_cp_1q21_call == "yes" & maf_combined_call == "no" ~ "gain(1q21)", # no yes is not possible
+    seqwgs_cp_1q21_call == "no" & maf_combined_call == "yes" ~ "MAF/MAFA/MAFB", # no yes is not possible
+    seqwgs_cp_1q21_call == "no" & maf_combined_call == "no" ~ "Normal",
+    is.na(seqwgs_cp_1q21_call) | is.na(maf_combined_call) ~ NA,
+    .default = "UNHANDLED CASE"
+))
+
+print("mixed_MAF_1q21_class")
+table(df_counts$mixed_MAF_1q21_class, df_counts$maf_combined_call)
+table(df_counts$mixed_MAF_1q21_class, df_counts$seqwgs_cp_1q21_call)
+table(is.na(df_counts$mixed_MAF_1q21_class), is.na(df_counts$seqwgs_cp_1q21_call))
+table(is.na(df_counts$mixed_MAF_1q21_class), is.na(df_counts$maf_combined_call))
+
+output_rds <- file.path("output", "BulkRNA_misc_GSVA", "GSVA_IFN_AND_PROLIFERATIONGSVA.rds")
+
+saveRDS(df_counts, output_rds)
+```
+
+# IFN1 Score - 1q21 gain/amp
+
+```{r}
+library(ggbeeswarm)
+library(ggprism)
+df_counts_b <- data.frame(bulk_id = colnames(cpm(d_select)), ADAR = cpm(d_select, log = TRUE)["ENSG00000160710", ])
+df_counts_c <- dplyr::left_join(df_counts, df_counts_b, by = "bulk_id")
+
+df_counts_c <- df_counts_c |> dplyr::filter(seqwgs_1q21_CN_class %in% c("Amp(1q21)", "Gain(1q21)", "Normal"))
+df_counts_c$seqwgs_1q21_CN_class <- factor(df_counts_c$seqwgs_1q21_CN_class, levels = c("Normal", "Gain(1q21)", "Amp(1q21)"))
+
+
+seqwgs_1q21_CN_class_FILL <- c(
+    "Normal" = fill_NP,
+    "Gain(1q21)" = fill_RP,
+    "Amp(1q21)" = "#D44A41FF"
+)
+
+seqwgs_1q21_CN_class_COLOR <- c(
+    "Normal" = color_NP,
+    "Gain(1q21)" = color_RP,
+    "Amp(1q21)" = "#C91105FF"
+)
+
+pvals_wilcox <- df_counts_c |>
+    rstatix::t_test(as.formula(paste0("IFN_Score", " ~ seqwgs_1q21_CN_class"))) |>
+    rstatix::add_xy_position()
+
+# Using above for a convenience in formatting... now to actually put in the right p-vals
+p <- ggplot(df_counts_c, aes(x = seqwgs_1q21_CN_class, y = IFN_Score, color = seqwgs_1q21_CN_class, fill = seqwgs_1q21_CN_class)) +
+    geom_violin(alpha = 0.33) +
+    geom_boxplot(outlier.shape = NA, width = 0.2, alpha = 0.75) +
+    geom_quasirandom(shape = 1, show.legend = F, width = 0.3, alpha = 0.75) +
+    ylab(sprintf("IFN-1 Signature Score")) +
+    ggtitle("CD138+ Bulk RNAseq IFN-1 Score") +
+    theme_prism() +
+    scale_fill_manual(values = seqwgs_1q21_CN_class_FILL) +
+    scale_color_manual(values = seqwgs_1q21_CN_class_COLOR) +
+    ggpubr::stat_pvalue_manual(pvals_wilcox, xmin = "xmin", xmax = "xmax", label = "p", inherit.aes = F, size = 5) +
+    xlab("1q21 CN State")
+
+pdf_and_png(p, output, "IFN_Score_1q21_State", pdfWidth = 2.5, pdfHeight = 1.8, scale = 3)
+```
+
+
+
+```{r}
+tmp_counts <- df_counts |> dplyr::filter(IMWG_FLAG_tp53 %in% c(TRUE, FALSE))
+
+
+tmp_counts <- tmp_counts |> dplyr::mutate(tp53_inactivation_state = dplyr::case_when(
+    as.numeric(seqwgs_cp_17p13) < log2(0.4) ~ "COMPLETE",
+    seqwgs_cp_17p13_call == "yes" & tp53_mut_call == "yes" ~ "COMPLETE",
+    seqwgs_cp_17p13_call == "yes" | tp53_mut_call == "yes" ~ "PARTIAL",
+    seqwgs_cp_17p13_call == "no" & tp53_mut_call == "no" ~ "NONE",
+    .default = NA
+))
+d_select <- d[, tmp_counts$bulk_id]
+
+mm <- model.matrix(as.formula(paste0("~ 0 + tp53_inactivation_state")), data = tmp_counts)
+y <- voom(d_select, mm, plot = T)
+
+fit <- lmFit(y, mm)
+contr <- makeContrasts(contrasts = c("tp53_inactivation_statePARTIAL - tp53_inactivation_stateNONE", "tp53_inactivation_stateCOMPLETE - tp53_inactivation_stateNONE", "tp53_inactivation_stateCOMPLETE - tp53_inactivation_statePARTIAL"), levels = colnames(coef(fit)))
+tmp <- contrasts.fit(fit, contr)
+tmp <- eBayes(tmp)
+test_pn <- topTable(tmp, n = "Inf", sort.by = "logFC", coef = 1)
+test_cn <- topTable(tmp, n = "Inf", sort.by = "logFC", coef = 2)
+test_cp <- topTable(tmp, n = "Inf", sort.by = "logFC", coef = 3)
+
+pn_TNFRSF10B <- test_pn["ENSG00000120889", ]
+cn_TNFRSF10B <- test_cn["ENSG00000120889", ]
+cp_TNFRSF10B <- test_cp["ENSG00000120889", ]
+
+
+test_pn$ensembl_gene_id <- rownames(test_pn)
+test_pn <- dplyr::left_join(test_pn, G_list, "ensembl_gene_id")
+rownames(test_pn) <- test_pn$ensembl_gene_id
+write.csv(test_pn, "partial_vs_none_tp53_loss.csv")
+
+
+
+test_cn$ensembl_gene_id <- rownames(test_cn)
+test_cn <- dplyr::left_join(test_cn, G_list, "ensembl_gene_id")
+rownames(test_cn) <- test_cn$ensembl_gene_id
+write.csv(test_cn, "complete_vs_none_tp53_loss.csv")
+
+test_cp$ensembl_gene_id <- rownames(test_cp)
+test_cp <- dplyr::left_join(test_cp, G_list, "ensembl_gene_id")
+rownames(test_cp) <- test_cp$ensembl_gene_id
+write.csv(test_cp, "complete_vs_partial_tp53_loss.csv")
+```
+
+# TP53, IFN1 Score
+
+
+```{r}
+df_counts_b <- data.frame(USP18 = cpm(d_select, log = TRUE)["ENSG00000184979", ], IFI44L = cpm(d_select, log = TRUE)["ENSG00000137959", ], bulk_id = colnames(cpm(d_select)), TRAIL = cpm(d_select, log = TRUE)["ENSG00000121858", ], TNFRSF10B = cpm(d_select, log = TRUE)["ENSG00000120889", ])
+df_counts_c <- dplyr::left_join(df_counts, df_counts_b, by = "bulk_id")
+df_counts_c <- df_counts_c |> dplyr::mutate(IFN_Score_binned = IFN_Score > 0.44549)
+
+df_counts_c <- df_counts_c |> dplyr::mutate(tp53_inactivation_state = dplyr::case_when(
+    as.numeric(seqwgs_cp_17p13) < log2(0.4) ~ "COMPLETE",
+    seqwgs_cp_17p13_call == "yes" & tp53_mut_call == "yes" ~ "COMPLETE",
+    seqwgs_cp_17p13_call == "yes" | tp53_mut_call == "yes" ~ "PARTIAL",
+    seqwgs_cp_17p13_call == "no" & tp53_mut_call == "no" ~ "NONE",
+    .default = NA
+))
+df_counts_c <- df_counts_c |> dplyr::filter(tp53_inactivation_state %in% c("COMPLETE", "PARTIAL", "NONE"))
+df_counts_c$tp53_inactivation_state <- factor(df_counts_c$tp53_inactivation_state, levels = c("NONE", "PARTIAL", "COMPLETE"))
+
+
+fill_theme_tp53_inactivation_state <- c(
+    "NONE" = fill_NP,
+    "PARTIAL" = fill_RP,
+    "COMPLETE" = "#D44A41FF"
+)
+
+color_theme_tp53_inactivation_state <- c(
+    "NONE" = color_NP,
+    "PARTIAL" = color_RP,
+    "COMPLETE" = "#C91105FF"
+)
+
+pvals_wilcox <- df_counts_c |>
+    rstatix::t_test(as.formula(paste0("IFN_Score", " ~ tp53_inactivation_state"))) |>
+    rstatix::add_xy_position()
+
+# Using above for a convenience in formatting... now to actually put in the right p-vals
+p <- ggplot(df_counts_c, aes(x = tp53_inactivation_state, y = IFN_Score, color = tp53_inactivation_state, fill = tp53_inactivation_state)) +
+    geom_violin(alpha = 0.33) +
+    geom_boxplot(outlier.shape = NA, width = 0.2, alpha = 0.75) +
+    geom_quasirandom(shape = 1, show.legend = F, width = 0.3, alpha = 0.75) +
+    ggtitle(feat) +
+    ylab(sprintf("IFN-1 Signature Score")) +
+    ggtitle("CD138+ Bulk RNAseq IFN-1 Score") +
+    theme_prism() +
+    scale_fill_manual(values = fill_theme_tp53_inactivation_state) +
+    scale_color_manual(values = color_theme_tp53_inactivation_state) +
+    ggpubr::stat_pvalue_manual(pvals_wilcox, xmin = "xmin", xmax = "xmax", label = "p", inherit.aes = F, size = 5) +
+    xlab("TP53 Inactivation")
+
+pdf_and_png(p, output, "IFN_Score_P53_State", pdfWidth = 2.5, pdfHeight = 1.8, scale = 3)
+```
+
+
+```{r}
+df_counts_b <- data.frame(USP18 = cpm(d, log = TRUE)["ENSG00000184979", ], IFI44L = cpm(d, log = TRUE)["ENSG00000137959", ], bulk_id = colnames(cpm(d)), TRAIL = cpm(d, log = TRUE)["ENSG00000121858", ], TNFRSF10B = cpm(d, log = TRUE)["ENSG00000120889", ])
+df_counts_c <- dplyr::left_join(df_counts, df_counts_b, by = "bulk_id")
+df_counts_c <- df_counts_c |> dplyr::mutate(IFN_Score_binned = IFN_Score > 0.44549)
+
+df_counts_c <- df_counts_c |> dplyr::mutate(tp53_inactivation_state = dplyr::case_when(
+    as.numeric(seqwgs_cp_17p13) < log2(0.4) ~ "COMPLETE",
+    seqwgs_cp_17p13_call == "yes" & tp53_mut_call == "yes" ~ "COMPLETE",
+    seqwgs_cp_17p13_call == "yes" | tp53_mut_call == "yes" ~ "PARTIAL",
+    seqwgs_cp_17p13_call == "no" & tp53_mut_call == "no" ~ "NONE",
+    .default = NA
+))
+df_counts_c <- df_counts_c |> dplyr::filter(tp53_inactivation_state %in% c("COMPLETE", "PARTIAL", "NONE"))
+df_counts_c$tp53_inactivation_state <- factor(df_counts_c$tp53_inactivation_state, levels = c("NONE", "PARTIAL", "COMPLETE"))
+
+
+fill_theme_tp53_inactivation_state <- c(
+    "NONE" = fill_NP,
+    "PARTIAL" = fill_RP,
+    "COMPLETE" = "#D44A41FF"
+)
+
+color_theme_tp53_inactivation_state <- c(
+    "NONE" = color_NP,
+    "PARTIAL" = color_RP,
+    "COMPLETE" = "#C91105FF"
+)
+
+pvals_wilcox <- df_counts_c |>
+    rstatix::t_test(as.formula(paste0("IFN_Score", " ~ tp53_inactivation_state"))) |>
+    rstatix::add_xy_position()
+
+# Using above for a convenience in formatting... now to actually put in the right p-vals
+p <- ggplot(df_counts_c, aes(x = tp53_inactivation_state, y = IFN_Score, color = tp53_inactivation_state, fill = tp53_inactivation_state)) +
+    geom_violin(alpha = 0.33) +
+    geom_boxplot(outlier.shape = NA, width = 0.2, alpha = 0.75) +
+    geom_quasirandom(shape = 1, show.legend = F, width = 0.3, alpha = 0.75) +
+    ggtitle(feat) +
+    ylab(sprintf("IFN-1 Signature Score")) +
+    ggtitle("CD138+ Bulk RNAseq IFN-1 Score") +
+    theme_prism() +
+    scale_fill_manual(values = fill_theme_tp53_inactivation_state) +
+    scale_color_manual(values = color_theme_tp53_inactivation_state) +
+    ggpubr::stat_pvalue_manual(pvals_wilcox, xmin = "xmin", xmax = "xmax", label = "p", inherit.aes = F, size = 5) +
+    xlab("TP53 Inactivation")
+
+pdf_and_png(p, output, "IFN_Score_P53_State", pdfWidth = 2.5, pdfHeight = 1.8, scale = 3)
+```
+
+
+```{r}
+library(ggbeeswarm)
+library(ggprism)
+df_counts <- data.frame(IFN_Score = unlist(en["IFN", ]), bulk_id = colnames(en))
+df_counts <- dplyr::left_join(df_counts, md_bulk_tmp, by = "bulk_id")
+
+df_counts <- df_counts |> dplyr::mutate(tp53_inactivation_state = dplyr::case_when(
+    as.numeric(seqwgs_cp_17p13) < log2(0.4) ~ "COMPLETE",
+    seqwgs_cp_17p13_call == "yes" & tp53_mut_call == "yes" ~ "COMPLETE",
+    seqwgs_cp_17p13_call == "yes" | tp53_mut_call == "yes" ~ "PARTIAL",
+    seqwgs_cp_17p13_call == "no" & tp53_mut_call == "no" ~ "NONE",
+    .default = NA
+))
+df_counts <- df_counts |> dplyr::filter(tp53_inactivation_state %in% c("COMPLETE", "PARTIAL", "NONE"))
+df_counts$tp53_inactivation_state <- factor(df_counts$tp53_inactivation_state, levels = c("NONE", "PARTIAL", "COMPLETE"))
+feat <- "IFN_Score"
+
+fill_theme_binary_PCPCT <- c(
+    "NONE" = fill_NP,
+    "PARTIAL" = fill_RP,
+    "COMPLETE" = color_RP
+)
+
+color_theme_binary_PCPCT <- c(
+    "NONE" = fill_NP,
+    "PARTIAL" = fill_RP,
+    "COMPLETE" = color_RP
+)
+
+
+pvals_wilcox <- df_counts |>
+    rstatix::wilcox_test(as.formula(paste0(feat, " ~ tp53_inactivation_state"))) |>
+    rstatix::add_xy_position()
+
+p <- ggplot(df_counts, aes(x = tp53_inactivation_state, y = IFN_Score, color = tp53_inactivation_state, fill = tp53_inactivation_state)) +
+    geom_violin(alpha = 0.33) +
+    geom_boxplot(outlier.shape = NA, width = 0.2, alpha = 0.75) +
+    geom_quasirandom(shape = 1, show.legend = F, width = 0.3, alpha = 0.75) +
+    ggtitle(feat) +
+    ylab(sprintf("IFN-I Signature Score")) +
+    ggtitle("CD138+ Bulk RNAseq IFN-I Score") +
+    theme_prism() +
+    scale_fill_manual(values = fill_theme_binary_PCPCT) +
+    scale_color_manual(values = color_theme_binary_PCPCT) +
+    ggpubr::stat_pvalue_manual(pvals_wilcox, xmin = "xmin", xmax = "xmax", label = "p", inherit.aes = F, size = 5) +
+    xlab("del(17p13) Present")
+
+# pdf_and_png(p, output, "tp53_IFN", pdfWidth = 3, pdfHeight = 4, scale = 3)
+# output_rds <- file.path("output", "BulkRNA_misc_GSVA", "GSVA_IFN.rds")
+#
+# saveRDS(df_counts, output_rds)
+```

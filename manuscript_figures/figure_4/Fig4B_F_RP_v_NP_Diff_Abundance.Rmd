@@ -1,0 +1,1496 @@
+---
+title: "Figure 4 - Differential Abundance Plots"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+
+
+Generates the select differential abundance box plots for main figures
+
+Includes: 
+
+Figure 4b (Differential Abundance of Major Cell Types)
+
+Supplemental Figure 8 (CD8% of CD3+ Cells)
+
+Figure 4f (Box plots of select CD3+ cells)
+
+Revisions: Differential abundance methodology for entire paper standardized to logit transformation
+
+The original file performs all calculations for all parts of the paper in one location. This version of the file simplifies down to sections relevant to Figure 4.
+
+
+# This code is a wrapper to perform differential abundance tests for a variety of variables.
+# All differetial abundances analyses perform binary comparions between a group with or without an event, adjusting for siteXbatch as a covariate.
+# All differential abundances use limma with a robust linear model to fit to the logit-transformed proportions, in a mechanism similar to propeller.
+# Logit is preferred for its interpretability as opposed to arcsin-transformations.
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Setup
+```{r init}
+library(ggpubr)
+source("source/Validation/validation_load_data.R", local = T)
+source("source/Helper_Functions/COMMON_diff_abundance_functions.R", local = T)
+
+cluster_group <- "subcluster_V03072023"
+output_expr <- file.path(output, "Diff_Abundance", "LINEAR_LOGIT", "RISK_CATEGORIES_STUDY_SITE")
+
+output_extra <- file.path(output_F3, "Diff_Abundance")
+output_box <- file.path(output_extra, "Diff_Abundance_Box")
+output_raw_csv <- file.path(output_extra, "CSV")
+output_abun_volcano <- file.path(output_extra, "Diff_Abun_Volcano")
+dir.create(output_extra, showWarnings = F, recursive = T)
+dir.create(output_box, showWarnings = F, recursive = T)
+dir.create(output_raw_csv, showWarnings = F, recursive = T)
+dir.create(output_abun_volcano, showWarnings = F, recursive = T)
+dir.create(output_expr, showWarnings = F, recursive = T)
+
+# floral_fill_theme <- list(
+#     "groupA (SIG)" = fill_RP,
+#     "groupA" = "#a9bad0",
+#     "groupB (SIG)" = "#A48AD3",
+#     "groupB" = "#baafcf"
+# )
+
+floral_color_theme <- list(
+    "SIG (+)" = fill_RP,
+    "+" = color_RP,
+    "SIG (-)" = fill_NP,
+    "-" = color_NP
+)
+
+floral_fill_theme <- floral_color_theme
+```
+
+```{r}
+var_to_test <- "nsd2_call"
+groupA <- "yes"
+groupB <- "no"
+
+# function_string <- "d_pt_race_1"
+method <- "LINEAR"
+
+variable_info_structure <- rev(list(
+    "progression_group" = list(
+        isFactor = TRUE,
+        factorLevels = c("NP", "RP"),
+        perform_univariate = TRUE,
+        univariate_batch = "Study_Site",
+        include_multivariate = FALSE,
+        variable_name = "Progression Group",
+        perform_contrasts = TRUE
+    ),
+    "SR_davies.progression_group" = list(
+        isFactor = TRUE,
+        factorLevels = c("standard_risk.NP", "standard_risk.RP", "high_risk.NP", "high_risk.RP"),
+        perform_univariate = TRUE,
+        univariate_batch = "Study_Site",
+        include_multivariate = FALSE,
+        variable_name = "Progression Group (Standard Risk)",
+        perform_contrasts = TRUE
+    ),
+    "Triplet_therapy.progression_group" = list(
+        isFactor = TRUE,
+        factorLevels = c("Triplet.NP", "Triplet.RP"),
+        perform_univariate = TRUE,
+        univariate_batch = "Study_Site",
+        include_multivariate = FALSE,
+        variable_name = "Progression Group (Triplet)"
+    ),
+    "Doublet_therapy.progression_group" = list(
+        isFactor = TRUE,
+        factorLevels = c("Doublet.NP", "Doublet.RP"),
+        perform_univariate = TRUE,
+        univariate_batch = "Study_Site",
+        include_multivariate = FALSE,
+        variable_name = "Progression Group (Doublet)"
+    ),
+    "Study_Site" = list(
+        isFactor = TRUE,
+        perform_univariate = FALSE,
+        include_multivariate = FALSE
+    )
+))
+```
+
+# Differential Abundance - Setup Counts Data
+
+```{r}
+# Only considering the 'discovery' samples at 'baseline'
+baseline <- merged |> subset(subset = (VJ_INTERVAL == "Baseline" & cohort == "discovery"))
+
+Idents(baseline) <- baseline@meta.data[, cluster_group]
+#  baseline$pfs_risk <- paste0(baseline$progression_group, "_", baseline[[var_to_test]])
+```
+
+
+# Setting up other covariates explored as part of separate analyses
+```{r}
+counts <- table(baseline$public_id, baseline@meta.data[, cluster_group])
+
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+
+
+baseline@meta.data$IMWG_RISK_CLASS <- factor(baseline@meta.data$IMWG_RISK_CLASS, levels = c(0, 1, 2))
+baseline@meta.data <- baseline@meta.data |> dplyr::mutate(IMWG_int_or_high = dplyr::case_when(
+    IMWG_RISK_CLASS == 0 ~ "standard_risk",
+    IMWG_RISK_CLASS %in% c(1, 2) ~ "high_risk",
+    .default = NA
+))
+
+baseline@meta.data$SR_davies.progression_group <- paste0(baseline@meta.data$davies_based_risk, ".", baseline@meta.data$progression_group)
+baseline@meta.data$HR_davies.progression_group <- paste0(baseline@meta.data$davies_based_risk, ".", baseline@meta.data$progression_group)
+
+baseline@meta.data$SR_IMWG2024.progression_group <- paste0(baseline@meta.data$IMWG_2024_HR, ".", baseline@meta.data$progression_group)
+baseline@meta.data$HR_IMWG2024.progression_group <- paste0(baseline@meta.data$IMWG_2024_HR, ".", baseline@meta.data$progression_group)
+
+baseline@meta.data$SR_EXPANDED.progression_group <- paste0(baseline@meta.data$expanded_risk_definition, ".", baseline@meta.data$progression_group)
+baseline@meta.data$HR_EXPANDED.progression_group <- paste0(baseline@meta.data$expanded_risk_definition, ".", baseline@meta.data$progression_group)
+
+
+baseline@meta.data <- baseline@meta.data |> dplyr::mutate(triplet_therapy = dplyr::case_when(
+    d_tx_induction_cat %in% c("imid_pi_steroid", "chemo_imid_pi_steroid") ~ "Triplet",
+    d_tx_induction_cat %in% c("pi_steroid", "chemo_pi_steroid", "imid_steroid", "chemo_imid_steroid") ~ "Doublet",
+    .default = "ERROR MISSED CASE"
+))
+
+baseline@meta.data$Triplet_therapy.progression_group <- paste0(baseline@meta.data$triplet_therapy, ".", baseline@meta.data$progression_group)
+baseline@meta.data$Doublet_therapy.progression_group <- paste0(baseline@meta.data$triplet_therapy, ".", baseline@meta.data$progression_group)
+```
+
+
+
+```{r}
+md_bl <- baseline@meta.data |>
+    dplyr::filter(VJ_INTERVAL == "Baseline") |>
+    dplyr::select(public_id, dplyr::all_of(names(variable_info_structure)))
+
+md_bl <- md_bl |> dplyr::distinct(public_id, .keep_all = T)
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+
+cluster_md <- baseline@meta.data |> dplyr::distinct(!!sym(cluster_group), isDoublet, subcluster_V03072023_compartment, lineage_group, lineage_order, cellID_short, cellID_long)
+colnames(cluster_md)[1] <- "cluster"
+counts <- counts |> dplyr::left_join(cluster_md, by = "cluster")
+```
+
+```{r}
+factor_names <- c()
+for (i in names(variable_info_structure)) {
+    if (variable_info_structure[[i]]$isFactor) {
+        factor_names <- c(factor_names, paste0(i, variable_info_structure[[i]]$factorLevels[2]))
+    } else {
+        factor_names <- c(factor_names, i)
+    }
+}
+```
+
+# Diff Abundance 
+
+
+### Perform all DAA tests
+
+```{r}
+source("source/Helper_Functions/COMMON_diff_abundance_functions.R", local = T)
+
+# baseline <- merged |> subset(VJ_INTERVAL == "Baseline")
+# Idents(baseline) <- baseline@meta.data[, cluster_group]
+#  baseline$pfs_risk <- paste0(baseline[[var_to_test]], "_", baseline[[var_to_test]])
+
+counts <- table(baseline$public_id, baseline@meta.data[, cluster_group])
+
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+md_bl <- baseline@meta.data |>
+    dplyr::filter(VJ_INTERVAL == "Baseline") |>
+    dplyr::select(public_id, siteXbatch, dplyr::all_of(names(variable_info_structure)))
+
+md_bl <- md_bl |> dplyr::distinct(public_id, .keep_all = T)
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+
+cluster_md <- baseline@meta.data |> dplyr::distinct(!!sym(cluster_group), isDoublet, subcluster_V03072023_compartment, lineage_group, lineage_order, cellID_short, cellID_long)
+colnames(cluster_md)[1] <- "cluster"
+counts <- counts |> dplyr::left_join(cluster_md, by = "cluster")
+
+# Subsets focused on in the paper for 'progression' based analyses
+types_list <- list(
+    "CD3+ Cells" = c("CD8", "CD4"),
+    "Myeloid Cells" = "M",
+    "B Cells" = "B",
+    "Immune" = c("CD8", "CD4", "M", "B", "Nk", "Other")
+)
+file_name_list <- list(
+    "CD3+ Cells" = "cd3_only",
+    "Myeloid Cells" = "myeloid_only",
+    "B Cells" = "b_only",
+    "Immune" = "immune_only"
+)
+
+# Automatic summary plots are generated within this script - separate code blocks generate figures directly for the paper.
+env_list <- list()
+for (idx_name in names(types_list)) {
+    all_cells <- new.env()
+
+    all_cells$counts <- counts |> dplyr::filter(lineage_group %in% types_list[[idx_name]])
+    all_cells$outs <- DiffAbun_Wrapper(all_cells$counts, variable_info_structure = variable_info_structure, DOMULTIVAR = F, method = "LINEAR", transform = "logit")
+
+    # all_cells$outs <- quickLinearAsinAndPlots(all_cells$counts, variable_info_structure)
+    write.csv(all_cells$outs$wilcox_out |> dplyr::arrange(factor), file.path(output_expr, paste0("linear_reg_", file_name_list[[idx_name]], ".csv")))
+    write.csv(all_cells$outs$wilcox_out_uni |> dplyr::arrange(factor), file.path(output_expr, paste0("linear_reg_UNI", file_name_list[[idx_name]], ".csv")))
+    all_cells$outs$wilcox_out <- all_cells$outs$wilcox_out |> dplyr::filter(variable != "siteXbatch")
+    all_cells$cluster_md <- cluster_md
+    all_cells$cluster_md$subcluster_V03072023 <- all_cells$cluster_md$cluster
+
+    all_cells$outs$wilcox_out <- dplyr::left_join(all_cells$outs$wilcox_out, all_cells$cluster_md, by = "cluster")
+    all_cells$outs$wilcox_out_uni <- dplyr::left_join(all_cells$outs$wilcox_out_uni, all_cells$cluster_md, by = "cluster")
+
+    all_cells$outs$wilcox_out$p.val <- as.numeric(all_cells$outs$wilcox_out$p.val)
+    all_cells$outs$wilcox_out$coef <- as.numeric(all_cells$outs$wilcox_out$coef)
+
+    all_cells$outs$wilcox_out_uni$p.val <- as.numeric(all_cells$outs$wilcox_out_uni$p.val)
+    all_cells$outs$wilcox_out_uni$coef <- as.numeric(all_cells$outs$wilcox_out_uni$coef)
+
+
+    all_cells$outs$wilcox_out <- all_cells$outs$wilcox_out |> dplyr::mutate(binned_pval = dplyr::case_when(
+        p.val < 0.001 & coef > 0 ~ "Enriched (<0.001)",
+        p.val < 0.01 & coef > 0 ~ "Enriched (<0.01)",
+        p.val < 0.05 & coef > 0 ~ "Enriched (0.05)",
+        p.val < 0.001 & coef < 0 ~ "Depleted (<0.001)",
+        p.val < 0.01 & coef < 0 ~ "Depleted (<0.01)",
+        p.val < 0.05 & coef < 0 ~ "Depleted (0.05)",
+        .default = "NS"
+    ))
+
+    all_cells$outs$wilcox_out$binned_pval <- factor(all_cells$outs$wilcox_out$binned_pval, levels = c(
+        "Depleted (<0.001)", "Depleted (<0.01)", "Depleted (0.05)", "NS", "Enriched (0.05)", "Enriched (<0.01)", "Enriched (<0.001)"
+    ))
+
+    all_cells$outs$wilcox_out_uni <- all_cells$outs$wilcox_out_uni |> dplyr::mutate(binned_pval = dplyr::case_when(
+        p.val < 0.001 & coef > 0 ~ "Enriched (<0.001)",
+        p.val < 0.01 & coef > 0 ~ "Enriched (<0.01)",
+        p.val < 0.05 & coef > 0 ~ "Enriched (0.05)",
+        p.val < 0.001 & coef < 0 ~ "Depleted (<0.001)",
+        p.val < 0.01 & coef < 0 ~ "Depleted (<0.01)",
+        p.val < 0.05 & coef < 0 ~ "Depleted (0.05)",
+        .default = "NS"
+    ))
+
+    all_cells$outs$wilcox_out_uni$binned_pval <- factor(all_cells$outs$wilcox_out_uni$binned_pval, levels = c(
+        "Depleted (<0.001)", "Depleted (<0.01)", "Depleted (0.05)", "NS", "Enriched (0.05)", "Enriched (<0.01)", "Enriched (<0.001)"
+    ))
+
+
+
+    all_cells$outs$wilcox_out_uni <- all_cells$outs$wilcox_out_uni |> dplyr::mutate(sig_levels = dplyr::case_when(
+        p.val < 0.01 ~ "Significant (p<0.01)",
+        p.val < 0.05 ~ "Significant (p<0.05)",
+        .default = "NS"
+    ))
+
+    all_cells$outs$wilcox_out_uni$sig_levels <- factor(all_cells$outs$wilcox_out_uni$sig_levels, levels = c(
+        "NS", "Significant (p<0.05)", "Significant (p<0.01)"
+    ))
+
+
+    custom_fill_theme <- list(
+        "Enriched (<0.001)" = "#A50021",
+        "Enriched (<0.01)" = "#F76D5E",
+        "Enriched (0.05)" = "#FFAD72",
+        "Depleted (<0.001)" = "#290AD8",
+        "Depleted (<0.01)" = "#3FA0FF",
+        "Depleted (0.05)" = "#AAF7FF",
+        "NS" = "grey"
+    )
+
+    custom_fill_theme_continuous <- list(
+        "Enriched (<0.001)" = "#A50021",
+        "Enriched (<0.01)" = "#F76D5E",
+        "Enriched (0.05)" = "#FFAD72",
+        "Depleted (<0.001)" = "#290AD8",
+        "Depleted (<0.01)" = "#3FA0FF",
+        "Depleted (0.05)" = "#AAF7FF",
+        "NS" = "#f5f5f5"
+    )
+    library(reshape2)
+
+    mat_multi <- reshape2::acast(all_cells$outs$wilcox_out, cellID_short ~ factor, value.var = "coef")
+    d_multi_cluster <- dist(mat_multi / sqrt(rowSums(mat_multi * mat_multi)), method = "euclidean")
+    multi_dendrogram_clusters <- hclust(d_multi_cluster)
+    d_multi_factor <- dist(t(mat_multi) / sqrt(rowSums(t(mat_multi) * t(mat_multi))), method = "euclidean")
+    multi_dendrogram_factor <- hclust(d_multi_factor)
+
+    test <- all_cells$outs$wilcox_out_uni |> dplyr::filter(cluster == "Myeloid.0")
+    mat_uni <- reshape2::acast(all_cells$outs$wilcox_out_uni, cellID_short ~ factor, value.var = "coef")
+    d_uni_cluster <- dist(mat_uni / sqrt(rowSums(mat_uni * mat_uni)), method = "euclidean")
+    uni_dendrogram_clusters <- hclust(d_uni_cluster)
+    d_uni_factor <- dist(t(mat_uni) / sqrt(rowSums(t(mat_uni) * t(mat_uni))), method = "euclidean")
+    uni_dendrogram_factor <- hclust(d_uni_factor)
+
+    uni_cluster_ordering <- uni_dendrogram_clusters$labels[uni_dendrogram_clusters$order]
+    uni_factor_ordering <- unique(all_cells$outs$wilcox_out_uni$factor) # factor_names # uni_dendrogram_factor$labels[uni_dendrogram_factor$order]
+
+    # multi_cluster_ordering <- uni_dendrogram_clusters$labels[uni_dendrogram_clusters$order]
+    # multi_factor_ordering <- factor_names # multi_dendrogram_factor$labels[multi_dendrogram_factor$order]
+
+
+    # all_cells$outs$wilcox_out$factor <- factor(all_cells$outs$wilcox_out$factor, levels = multi_factor_ordering)
+    # all_cells$outs$wilcox_out$cellID_short <- factor(all_cells$outs$wilcox_out$cellID_short, levels = multi_cluster_ordering)
+
+    all_cells$outs$wilcox_out_uni$factor <- factor(all_cells$outs$wilcox_out_uni$factor, levels = uni_factor_ordering)
+    all_cells$outs$wilcox_out_uni$cellID_short <- factor(all_cells$outs$wilcox_out_uni$cellID_short, levels = uni_cluster_ordering)
+
+    heights <- length(unique(all_cells$outs$wilcox_out_uni$factor))
+    char_len_uni <- max(nchar(levels(all_cells$outs$wilcox_out_uni$factor)))
+
+    widths <- length(unique(all_cells$outs$wilcox_out_uni$cluster)) + char_len_uni / 4
+    scale_factor <- 12
+
+    p_uni_indiv <- ggplot(all_cells$outs$wilcox_out_uni) +
+        geom_point(aes(x = cellID_short, y = factor, fill = coef, size = sig_levels, shape = sig_levels), color = "#868686") +
+        scale_fill_gradient2(
+            low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.31, 0.31),
+            oob = squish
+        ) +
+        scale_size_manual(values = c("Significant (p<0.01)" = 7.5, "Significant (p<0.05)" = 6, "NS" = 4.25), drop = F) +
+        scale_shape_manual(values = c("Significant (p<0.01)" = 22, "Significant (p<0.05)" = 23, "NS" = 21), drop = F) +
+        theme_prism() +
+        xlab("Cluster") +
+        ylab("Factor") +
+        ggtitle("Univariate Linear Model (Corr sXb)") +
+        coord_fixed() +
+        guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+        theme(axis.text.x = element_text(
+            size = 14 * 0.95,
+            family = "sans", face = "bold",
+            margin = margin(t = 0.8 * 14 / 4),
+            angle = 90,
+            vjust = 0.5,
+            hjust = 1,
+        ))
+
+    # p_uni_comb <- (p_uni + theme(axis.text.x = element_blank(), axis.title.x = element_blank())) / (p_uni_2 + theme(plot.title = element_blank()))
+    heights <- length(unique(all_cells$outs$wilcox_out_uni$factor))
+    char_len_uni <- max(nchar(levels(all_cells$outs$wilcox_out_uni$factor)))
+
+    widths <- length(unique(all_cells$outs$wilcox_out_uni$cluster)) + char_len_uni / 4
+
+    # pdf_and_png(p_uni, output_expr, paste0("linear_reg_uni_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor, scale = 3)
+    # pdf_and_png(p_uni_2, output_expr, paste0("linear_reg_uni_LOGFC_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor, scale = 3)
+    # pdf_and_png(p_uni_comb, output_expr, paste0("linear_reg_uni_COMBINED_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor * 2, scale = 3)
+    pdf_and_png(p_uni_indiv, output_expr, paste0("linear_reg_uni_ALT_COMBINED_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor, scale = 3)
+
+    plot_list <- list()
+    for (i in types_list[[idx_name]]) {
+        all_cells$sub_wilcox_out <- all_cells$outs$wilcox_out_uni |> dplyr::filter(lineage_group %in% i)
+
+        sub_mat_uni <- reshape2::acast(all_cells$sub_wilcox_out, cellID_short ~ factor, value.var = "coef")
+        sub_d_uni_cluster <- dist(sub_mat_uni / sqrt(rowSums(sub_mat_uni * sub_mat_uni)), method = "euclidean")
+        sub_uni_dendrogram_clusters <- hclust(sub_d_uni_cluster)
+
+
+        sub_uni_cluster_ordering <- sub_uni_dendrogram_clusters$labels[sub_uni_dendrogram_clusters$order]
+
+
+        # all_cells$sub_wilcox_out$factor <- factor(all_cells$sub_wilcox_out$factor, levels = uni_factor_ordering)
+        # all_cells$sub_wilcox_out$cellID_short <- factor(all_cells$sub_wilcox_out$cellID_short, levels = sub_uni_cluster_ordering)
+
+
+        all_cells$sub_wilcox_out$sig_binned_value <- factor(all_cells$sub_wilcox_out$binned_pval, levels = c(
+            "NS", "Significant (p<0.05)", "Significant (p<0.01)"
+        ))
+        all_cells$sub_wilcox_out$binned_pval <- factor(all_cells$sub_wilcox_out$binned_pval, levels = c("Depleted (<0.001)", "Depleted (<0.01)", "Depleted (0.05)", "NS", "Enriched (0.05)", "Enriched (<0.01)", "Enriched (<0.001)"))
+        #                low = "#290AD8", mid = "grey", high = "#A50021", limits = c(-0.31, 0.31),
+
+        plot_list[[i]] <- ggplot(all_cells$sub_wilcox_out) +
+            geom_point(aes(x = cellID_short, y = factor, fill = coef, size = sig_levels, shape = sig_levels), color = "#868686", show.legend = TRUE) +
+            scale_fill_gradient2(
+                low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.31, 0.31),
+                oob = squish
+            ) +
+            scale_size_manual(values = c("Significant (p<0.01)" = 7.5, "Significant (p<0.05)" = 6, "NS" = 4.25), drop = F) +
+            scale_shape_manual(values = c("Significant (p<0.01)" = 22, "Significant (p<0.05)" = 23, "NS" = 21), drop = F) +
+            theme_prism() +
+            xlab("Cluster") +
+            ylab("Factor") +
+            ggtitle(i) +
+            coord_fixed() +
+            guides(size = guide_legend(override.aes = list(colour = "grey", fill = "white"))) +
+            theme(
+                axis.text.x = element_text(
+                    size = 14 * 0.95,
+                    family = "sans", face = "bold",
+                    margin = margin(t = 0.8 * 14 / 4),
+                    angle = 90,
+                    vjust = 0.5,
+                    hjust = 1,
+                ),
+                axis.title.x = element_blank(),
+                plot.margin = unit(c(0, 1, 0, 0), "lines")
+            )
+        if (i != types_list[[idx_name]][[1]]) {
+            plot_list[[i]] <- plot_list[[i]] + theme(
+                axis.text.y = element_blank(),
+                axis.ticks.y = element_blank(),
+                axis.title.y = element_blank(),
+                axis.line.y = element_blank(),
+                axis.ticks.length.y = unit(0, "lines")
+            )
+        }
+    }
+
+    for (i in unique(all_cells$outs$wilcox_out_uni$cluster)) {
+        plot <- patchwork::wrap_plots(plot_list, ncol = length(types_list[[idx_name]]), byrow = T, guides = "collect", axes = "collect", axes_titles = "collect")
+    }
+    pdf_and_png(plot, output_expr, paste0("linear_reg_uni_ALT_COMBINED_FACETTED_GROUPS_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor, scale = 3)
+
+    env_list[[idx_name]] <- all_cells
+}
+```
+
+# Supplementary Figures - All Box plots for RP vs NP (Not automatically constructed for all covariates)
+
+```{r}
+types_list <- list(
+    "CD3+ Cells" = c("CD8", "CD4"),
+    "Myeloid Cells" = "M",
+    "B Cells" = "B",
+    "Immune" = c("CD8", "CD4", "M", "B", "Nk", "Other")
+)
+
+yaxis_str <- c(
+    "CD3+ Cells" = "CD3+ Cells",
+    "Myeloid Cells" = "Myeloid Cells",
+    "B Cells" = "B Cells",
+    "Immune" = "Immune Cells"
+)
+
+cov <- "Progression Group"
+for (idx_name in names(types_list)) {
+    all_cells <- env_list[[idx_name]]
+
+    wilcox_out_uni <- all_cells$outs$wilcox_out_uni
+
+    factor_list <- unique(wilcox_out_uni$factor)
+
+    # for (cov in factor_list) {
+    wilcox_plot_env <- new.env()
+    wilcox_plot_env$wilcox_out <- wilcox_out_uni |> dplyr::filter(variable == "progression_group")
+
+    variable <- unique(wilcox_plot_env$wilcox_out$variable)
+
+    variable_info <- variable_info_structure[[variable]]
+
+    # if (variable_info$isFactor) {
+    groupA <- "RP" # unique(wilcox_plot_env$wilcox_out$groupA)
+    groupB <- "NP" # unique(wilcox_plot_env$wilcox_out$groupB)
+
+
+    x_max_range <- max(abs(wilcox_plot_env$wilcox_out$coef)) * 1.1
+
+    wilcox_plot_env$p <- ggplot(wilcox_plot_env$wilcox_out) +
+        geom_point(aes(x = coef, y = -log10(p.val + 1e-200), fill = direction, color = direction, alpha = 0.5), show.legend = F) +
+        geom_vline(xintercept = 0, color = "black", size = 1) +
+        geom_hline(yintercept = -log10(0.05 + 1e-200), color = "black", size = 1) +
+        geom_label_repel(aes(x = coef, y = -log10(p.val + 1e-200), label = cellID_short, fill = direction), color = "white", max.overlaps = 15, segment.colour = "black") +
+        xlim(-x_max_range, x_max_range) +
+        ggtitle(paste0("Differential Abundance, ", cov)) +
+        theme_prism()
+
+    wilcox_plot_env$annotations <- data.frame(
+        xpos = c(-Inf, Inf),
+        ypos = c(Inf, Inf),
+        annotateText = c(
+            sprintf("%s Enriched", groupB),
+            sprintf("%s Enriched", groupA)
+        ),
+        hjustvar = c(-.05, 1),
+        vjustvar = c(1, 1)
+    )
+
+    wilcox_plot_env$p <- wilcox_plot_env$p +
+        scale_fill_manual(values = floral_fill_theme, breaks = names(floral_fill_theme), labels = c(sprintf("%s*", groupA), sprintf("%s", groupA), sprintf("%s*", groupB), sprintf("%s", groupB))) +
+        scale_color_manual(values = floral_color_theme) +
+        xlab("Adjusted Log-Odds Ratio") +
+        ylab("-log10 P Value") +
+        ggtitle(paste0("Differential Abundance, ", yaxis_str[[idx_name]])) +
+        geom_text(data = wilcox_plot_env$annotations, aes(x = xpos, y = ypos, hjust = hjustvar, vjust = vjustvar, label = annotateText, fontface = "bold"), size = 6)
+
+    # browser()
+    count_plot <- all_cells$outs$counts_uni[[variable]]
+
+    box_plots <- new.env()
+    box_plots$data <- count_plot |> dplyr::filter(progression_group %in% c("NP", "RP"))
+
+
+    # Add cluster size
+    box_plots$data <- box_plots$data |> dplyr::arrange(lineage_group) # , desc(sum))
+
+    box_plots$panels <- unique(box_plots$data$cluster)
+
+    box_plots$plot_list <- list()
+    box_plots$plot_list_bar <- list()
+
+    box_plots$per_clust_max <- box_plots$data |>
+        dplyr::group_by(cluster, progression_group) |>
+        dplyr::summarise(Q1 = quantile(prop, 0.25), Q3 = quantile(prop, 0.75), IQR = Q3 - Q1, upper = min(max(prop), Q3 + 1.5 * IQR), lower = max(min(prop), Q1 - 1.5 * IQR)) |>
+        dplyr::group_by(cluster) |>
+        dplyr::summarise(lower_min = min(lower), upper_max = max(upper), IQR_max = max(IQR), y.position = upper_max + 0.5 * IQR_max, y.position.alt = upper_max + 0.2 * IQR_max)
+
+    box_plots$per_clust_max <- box_plots$per_clust_max |> dplyr::mutate(
+        y.position = dplyr::case_when(
+            y.position == 0 ~ 0.001,
+            .default = y.position
+        ),
+        y.position.alt = dplyr::case_when(
+            y.position.alt == 0 ~ 0.001,
+            .default = y.position.alt
+        )
+    )
+
+    box_plots$data <- box_plots$data |> dplyr::left_join(box_plots$per_clust_max, by = "cluster")
+    pval_info <- wilcox_out_uni |> dplyr::filter(variable == "progression_group")
+    pval_info <- pval_info |> dplyr::left_join(box_plots$per_clust_max, by = "cluster")
+    pval_info$group1 <- pval_info$groupB
+    pval_info$group2 <- pval_info$groupA # swapping for positioning
+    grouping_var <- "progression_group"
+    wrap_point <- 6
+
+    custom_lin_group_order <- types_list[[idx_name]] # unique(all_cells$counts$lineage_group)
+
+    for (k in custom_lin_group_order) {
+        box_plots$panels_select <- box_plots$data |>
+            dplyr::filter(lineage_group == k) |>
+            dplyr::distinct(cluster)
+
+        box_plots$panels_select <- box_plots$panels_select[["cluster"]]
+
+        box_plots$plot_list[[k]] <- list()
+
+        for (i in box_plots$panels_select) {
+            box_plots$tmp <- box_plots$data |> dplyr::filter(cluster == i)
+            # browser()
+
+            box_plots$tmp_distinct <- pval_info |> dplyr::filter(cluster == i) # box_plots$tmp |> dplyr::distinct(cluster, p, y.position, y.position.alt, cluster_size, cellID_short, group1, group2)
+            box_plots$tmp_distinct$p.val <- as.numeric(box_plots$tmp_distinct$p.val)
+            box_plots$tmp_distinct_pval_filt <- box_plots$tmp_distinct |> dplyr::filter(p.val <= 0.05)
+            box_plots$plot_list[[k]][[i]] <- ggplot(box_plots$tmp) +
+                geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+                geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+                stat_pvalue_manual(box_plots$tmp_distinct_pval_filt, label = "{scales::pvalue(p.val)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+                theme_prism() +
+                ylim(c(0, box_plots$tmp_distinct$y.position)) +
+                scale_fill_manual(values = fill_theme_binary) +
+                scale_color_manual(values = color_theme_binary) +
+                theme(axis.title.x = element_blank()) +
+                ylab((paste0("Proportion\n", "of ", yaxis_str[[idx_name]]))) +
+                NoLegend() +
+                coord_cartesian(clip = "off") +
+                theme(axis.title.x = element_blank()) +
+                ggtitle(box_plots$tmp_distinct$cellID_short) +
+                theme(plot.title = element_text(size = 14, face = "bold"))
+        }
+    }
+
+    test <- list()
+    test_b <- list()
+    heights <- c()
+    heights_b <- list()
+    widths_b <- list()
+
+    heights_b_con <- c()
+    widths_b_con <- c()
+
+    for (i in 1:(4 * wrap_point)) {
+        test_b[[i]] <- plot_spacer()
+    }
+    # Use the Design matrix to add gaps in the plot
+    for (k in custom_lin_group_order) {
+        for (i in seq_along(box_plots$plot_list[[k]])) {
+            if (mod(i - 1, wrap_point) != 0) {
+                box_plots$plot_list[[k]][[i]] <- box_plots$plot_list[[k]][[i]] + theme(axis.title.y = element_blank())
+            }
+        }
+        numPlots <- length(box_plots$plot_list[[k]])
+        if (numPlots > 0) {
+            if (mod(numPlots, wrap_point) != 0) {
+                idx <- 1
+                for (i in (mod(numPlots, wrap_point) + 1):wrap_point) {
+                    box_plots$plot_list[[k]][[numPlots + idx]] <- plot_spacer()
+                    idx <- idx + 1
+                }
+            }
+            updated_size <- length(box_plots$plot_list[[k]])
+            for (i in 1:6) {
+                box_plots$plot_list[[k]][[updated_size + i]] <- plot_spacer()
+            }
+            widths_b[[k]] <- rep(1.0, length(box_plots$plot_list[[k]]))
+            heights_b[[k]] <- rep(1.0, length(box_plots$plot_list[[k]]))
+
+            widths_b_con <- c(widths_b_con, widths_b[[k]])
+            heights_b_con <- c(heights_b_con, heights_b[[k]])
+
+            test_b <- c(test_b, box_plots$plot_list[[k]])
+            test[[k]] <- wrap_plots(box_plots$plot_list[[k]], ncol = wrap_point)
+            heights[k] <- ceiling(length(box_plots$plot_list[[k]]) / wrap_point)
+        }
+    }
+
+    patchwork_nrows <- ceiling(length(test_b) / wrap_point)
+    patchwork_area <- ceiling(sqrt(length(test_b))) # ?????????????????
+
+    # dark magic
+    design_mat <- patchwork::area()
+    base <- 0
+    for (i in seq_along(test_b)) {
+        col <- mod(i - 1, wrap_point) + 1
+        row <- ceiling(i / wrap_point)
+
+        design_mat <- c(design_mat, area(t = base + row, b = base + row, l = col, r = col))
+    }
+
+    test_multi <- wrap_plots(test_b, ncol = wrap_point, heights = heights_b_con)
+
+    patchwork_nrows <- ceiling(length(test_b) / wrap_point)
+    test_multi_with_wilcox <- test_multi + wilcox_plot_env$p + plot_layout(design = c(
+        design_mat,
+        area(t = 1, b = 3, l = 2, r = 5)
+    ))
+
+    test_multi_with_wilcox_free <- test_multi + free(wilcox_plot_env$p) + plot_layout(design = c(
+        design_mat,
+        area(t = 1, b = 3, l = 2, r = 5)
+    ))
+
+    pdf_and_png(test_multi_with_wilcox_free, output_expr, paste0("wrapped_free_", file_name_list[[idx_name]], ".pdf"), pdfWidth = 3 * W_FULL, pdfHeight = H_FULL * row / 2, scale = 3)
+    # }
+    # }
+}
+```
+
+# Triplet Therapy vs Normal Scatter Plot Supplementary Figure
+
+```{r}
+all_cells <- env_list[["Immune"]]
+
+wilcox_out_uni <- all_cells$outs$wilcox_out_uni
+
+all_prog <- wilcox_out_uni |>
+    dplyr::filter(variable == "progression_group") |>
+    dplyr::select(cellID_short, coef) |>
+    dplyr::rename(RP_v_NP = "coef")
+triplet_prog <- wilcox_out_uni |>
+    dplyr::filter(variable == "Triplet_therapy.progression_group") |>
+    dplyr::select(cellID_short, coef) |>
+    dplyr::rename(RP.T_v_NP.T = "coef")
+
+diff_abun_test <- dplyr::left_join(all_prog, triplet_prog, by = "cellID_short")
+
+
+diff_abun_test <- diff_abun_test |> dplyr::mutate(direction = dplyr::case_when(
+    RP.T_v_NP.T > 0 & RP_v_NP > 0 ~ "RP Enriched Consistent",
+    RP.T_v_NP.T < 0 & RP_v_NP < 0 ~ "NP Enriched Consistent",
+    RP.T_v_NP.T > 0 & RP_v_NP < 0 ~ "NP Overall, RP Triplet",
+    RP.T_v_NP.T < 0 & RP_v_NP > 0 ~ "NP Triplet, RP Overall",
+    RP.T_v_NP.T == 0 & RP_v_NP > 0 ~ "RP Overall, NC Triplet",
+    RP.T_v_NP.T == 0 & RP_v_NP < 0 ~ "NP Overall, NC Triplet",
+    RP.T_v_NP.T > 0 & RP_v_NP == 0 ~ "RP Triplet, NC Overall",
+    RP.T_v_NP.T < 0 & RP_v_NP == 0 ~ "NP Triplet, NC Overall",
+    RP.T_v_NP.T == 0 & RP_v_NP == 0 ~ "NC",
+    .default = "UNKNOWN CASE"
+))
+
+p_scatter <- ggplot(diff_abun_test) +
+    geom_point(aes(x = RP.T_v_NP.T, y = RP_v_NP, fill = direction, color = direction)) +
+    geom_label_repel(aes(x = RP.T_v_NP.T, y = RP_v_NP, label = cellID_short, fill = direction), max.overlaps = 20) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    coord_equal() +
+    xlab("RP-T v NP-T Log-Odds Ratio") +
+    ylab("RP v NP Log-Odds Ratio") +
+    xlim(c(-0.35, 0.35)) +
+    ylim(c(-0.35, 0.35))
+
+pdf_and_png(p_scatter, output_expr, "Triplet_v_overall_scatter", pdfWidth = 6, pdfHeight = 6, scale = 3)
+```
+
+# Performing the analysis on a 'lineage group' basis versus subcluster_V03072023 basis
+
+```{r}
+source("source/Helper_Functions/COMMON_diff_abundance_functions.R", local = T)
+
+# baseline <- merged |> subset(VJ_INTERVAL == "Baseline")
+# Idents(baseline) <- baseline@meta.data[, cluster_group]
+#  baseline$pfs_risk <- paste0(baseline[[var_to_test]], "_", baseline[[var_to_test]])
+
+counts <- table(baseline$public_id, baseline@meta.data[, "lineage_group"])
+
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+md_bl_all_var <- baseline@meta.data |> dplyr::distinct(public_id, .keep_all = T)
+
+
+md_bl <- baseline@meta.data |>
+    dplyr::filter(VJ_INTERVAL == "Baseline") |>
+    dplyr::select(public_id, siteXbatch, dplyr::all_of(names(variable_info_structure)))
+
+md_bl <- md_bl |> dplyr::distinct(public_id, .keep_all = T)
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+
+cluster_md <- baseline@meta.data |> dplyr::distinct(lineage_group)
+cluster_md$cluster <- cluster_md$lineage_group
+counts <- counts |> dplyr::left_join(cluster_md, by = "cluster")
+
+types_list <- list(
+    "LG CD3+ Cells" = c("CD8", "CD4"),
+    "LG Immune" = c("CD8", "CD4", "M", "B", "Other", "Nk"),
+    "LG All NoPlasma" = c("CD8", "CD4", "M", "B", "Other", "Nk", "E"),
+    "LG All" = c("CD8", "CD4", "M", "B", "Other", "Nk", "P", "E")
+)
+file_name_list <- list(
+    "LG CD3+ Cells" = "LINEAGE_GROUP_cd3_only",
+    "LG Immune" = "LINEAGE_GROUP_immune_only",
+    "LG All NoPlasma" = "LINEAGE_GROUP_All_NoPlasma",
+    "LG All" = "LINEAGE_GROUP_all_cells"
+)
+
+for (idx_name in names(types_list)) {
+    all_cells <- new.env()
+
+    all_cells$counts <- counts |> dplyr::filter(lineage_group %in% types_list[[idx_name]])
+    all_cells$outs <- DiffAbun_Wrapper(all_cells$counts, variable_info_structure = variable_info_structure, DOMULTIVAR = F, method = "LINEAR", transform = "logit")
+
+    # all_cells$outs <- quickLinearAsinAndPlots(all_cells$counts, variable_info_structure)
+    write.csv(all_cells$outs$wilcox_out |> dplyr::arrange(factor), file.path(output_expr, paste0("linear_reg_", file_name_list[[idx_name]], ".csv")))
+    write.csv(all_cells$outs$wilcox_out_uni |> dplyr::arrange(factor), file.path(output_expr, paste0("linear_reg_UNI_", file_name_list[[idx_name]], ".csv")))
+    all_cells$outs$wilcox_out <- all_cells$outs$wilcox_out |> dplyr::filter(variable != "siteXbatch")
+    all_cells$cluster_md <- cluster_md
+    all_cells$cluster_md$subcluster_V03072023 <- all_cells$cluster_md$cluster
+
+    all_cells$outs$wilcox_out <- dplyr::left_join(all_cells$outs$wilcox_out, all_cells$cluster_md, by = "cluster")
+    all_cells$outs$wilcox_out_uni <- dplyr::left_join(all_cells$outs$wilcox_out_uni, all_cells$cluster_md, by = "cluster")
+
+    all_cells$outs$wilcox_out$p.val <- as.numeric(all_cells$outs$wilcox_out$p.val)
+    all_cells$outs$wilcox_out$coef <- as.numeric(all_cells$outs$wilcox_out$coef)
+
+    all_cells$outs$wilcox_out_uni$p.val <- as.numeric(all_cells$outs$wilcox_out_uni$p.val)
+    all_cells$outs$wilcox_out_uni$coef <- as.numeric(all_cells$outs$wilcox_out_uni$coef)
+
+
+    all_cells$outs$wilcox_out <- all_cells$outs$wilcox_out |> dplyr::mutate(binned_pval = dplyr::case_when(
+        p.val < 0.001 & coef > 0 ~ "Enriched (<0.001)",
+        p.val < 0.01 & coef > 0 ~ "Enriched (<0.01)",
+        p.val < 0.05 & coef > 0 ~ "Enriched (0.05)",
+        p.val < 0.001 & coef < 0 ~ "Depleted (<0.001)",
+        p.val < 0.01 & coef < 0 ~ "Depleted (<0.01)",
+        p.val < 0.05 & coef < 0 ~ "Depleted (0.05)",
+        .default = "NS"
+    ))
+
+    all_cells$outs$wilcox_out$binned_pval <- factor(all_cells$outs$wilcox_out$binned_pval, levels = c(
+        "Depleted (<0.001)", "Depleted (<0.01)", "Depleted (0.05)", "NS", "Enriched (0.05)", "Enriched (<0.01)", "Enriched (<0.001)"
+    ))
+
+    all_cells$outs$wilcox_out_uni <- all_cells$outs$wilcox_out_uni |> dplyr::mutate(binned_pval = dplyr::case_when(
+        p.val < 0.001 & coef > 0 ~ "Enriched (<0.001)",
+        p.val < 0.01 & coef > 0 ~ "Enriched (<0.01)",
+        p.val < 0.05 & coef > 0 ~ "Enriched (0.05)",
+        p.val < 0.001 & coef < 0 ~ "Depleted (<0.001)",
+        p.val < 0.01 & coef < 0 ~ "Depleted (<0.01)",
+        p.val < 0.05 & coef < 0 ~ "Depleted (0.05)",
+        .default = "NS"
+    ))
+
+    all_cells$outs$wilcox_out_uni$binned_pval <- factor(all_cells$outs$wilcox_out_uni$binned_pval, levels = c(
+        "Depleted (<0.001)", "Depleted (<0.01)", "Depleted (0.05)", "NS", "Enriched (0.05)", "Enriched (<0.01)", "Enriched (<0.001)"
+    ))
+
+
+
+    all_cells$outs$wilcox_out_uni <- all_cells$outs$wilcox_out_uni |> dplyr::mutate(sig_levels = dplyr::case_when(
+        p.val < 0.01 ~ "Significant (p<0.01)",
+        p.val < 0.05 ~ "Significant (p<0.05)",
+        .default = "NS"
+    ))
+
+    all_cells$outs$wilcox_out_uni$sig_levels <- factor(all_cells$outs$wilcox_out_uni$sig_levels, levels = c(
+        "NS", "Significant (p<0.05)", "Significant (p<0.01)"
+    ))
+
+
+    custom_fill_theme <- list(
+        "Enriched (<0.001)" = "#A50021",
+        "Enriched (<0.01)" = "#F76D5E",
+        "Enriched (0.05)" = "#FFAD72",
+        "Depleted (<0.001)" = "#290AD8",
+        "Depleted (<0.01)" = "#3FA0FF",
+        "Depleted (0.05)" = "#AAF7FF",
+        "NS" = "grey"
+    )
+
+    custom_fill_theme_continuous <- list(
+        "Enriched (<0.001)" = "#A50021",
+        "Enriched (<0.01)" = "#F76D5E",
+        "Enriched (0.05)" = "#FFAD72",
+        "Depleted (<0.001)" = "#290AD8",
+        "Depleted (<0.01)" = "#3FA0FF",
+        "Depleted (0.05)" = "#AAF7FF",
+        "NS" = "#f5f5f5"
+    )
+    library(reshape2)
+
+    mat_multi <- reshape2::acast(all_cells$outs$wilcox_out, lineage_group ~ factor, value.var = "coef")
+    d_multi_cluster <- dist(mat_multi / sqrt(rowSums(mat_multi * mat_multi)), method = "euclidean")
+    multi_dendrogram_clusters <- hclust(d_multi_cluster)
+    d_multi_factor <- dist(t(mat_multi) / sqrt(rowSums(t(mat_multi) * t(mat_multi))), method = "euclidean")
+    multi_dendrogram_factor <- hclust(d_multi_factor)
+
+    mat_uni <- reshape2::acast(all_cells$outs$wilcox_out_uni, lineage_group ~ factor, value.var = "coef")
+    d_uni_cluster <- dist(mat_uni / sqrt(rowSums(mat_uni * mat_uni)), method = "euclidean")
+    uni_dendrogram_clusters <- hclust(d_uni_cluster)
+    d_uni_factor <- dist(t(mat_uni) / sqrt(rowSums(t(mat_uni) * t(mat_uni))), method = "euclidean")
+    uni_dendrogram_factor <- hclust(d_uni_factor)
+
+    uni_cluster_ordering <- uni_dendrogram_clusters$labels[uni_dendrogram_clusters$order]
+    uni_factor_ordering <- unique(all_cells$outs$wilcox_out_uni$factor) # factor_names # uni_dendrogram_factor$labels[uni_dendrogram_factor$order]
+
+    # multi_cluster_ordering <- uni_dendrogram_clusters$labels[uni_dendrogram_clusters$order]
+    # multi_factor_ordering <- factor_names # multi_dendrogram_factor$labels[multi_dendrogram_factor$order]
+
+
+    # all_cells$outs$wilcox_out$factor <- factor(all_cells$outs$wilcox_out$factor, levels = multi_factor_ordering)
+    # all_cells$outs$wilcox_out$cellID_short <- factor(all_cells$outs$wilcox_out$cellID_short, levels = multi_cluster_ordering)
+
+    all_cells$outs$wilcox_out_uni$factor <- factor(all_cells$outs$wilcox_out_uni$factor, levels = uni_factor_ordering)
+    all_cells$outs$wilcox_out_uni$lineage_group <- factor(all_cells$outs$wilcox_out_uni$lineage_group, levels = uni_cluster_ordering)
+
+    heights <- length(unique(all_cells$outs$wilcox_out_uni$factor))
+    char_len_uni <- max(nchar(levels(all_cells$outs$wilcox_out_uni$factor)))
+
+    widths <- length(unique(all_cells$outs$wilcox_out_uni$cluster)) + char_len_uni / 4
+    scale_factor <- 12
+
+    p_uni_indiv <- ggplot(all_cells$outs$wilcox_out_uni) +
+        geom_point(aes(x = lineage_group, y = factor, fill = coef, size = sig_levels, shape = sig_levels), color = "#868686") +
+        scale_fill_gradient2(
+            low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.31, 0.31),
+            oob = squish
+        ) +
+        scale_size_manual(values = c("Significant (p<0.01)" = 7.5, "Significant (p<0.05)" = 6, "NS" = 4.25), drop = F) +
+        scale_shape_manual(values = c("Significant (p<0.01)" = 22, "Significant (p<0.05)" = 23, "NS" = 21), drop = F) +
+        theme_prism() +
+        xlab("Cluster") +
+        ylab("Factor") +
+        ggtitle("Univariate Linear Model (Corr sXb)") +
+        coord_fixed() +
+        guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+        theme(axis.text.x = element_text(
+            size = 14 * 0.95,
+            family = "sans", face = "bold",
+            margin = margin(t = 0.8 * 14 / 4),
+            angle = 90,
+            vjust = 0.5,
+            hjust = 1,
+        ))
+
+    # p_uni_comb <- (p_uni + theme(axis.text.x = element_blank(), axis.title.x = element_blank())) / (p_uni_2 + theme(plot.title = element_blank()))
+    heights <- length(unique(all_cells$outs$wilcox_out_uni$factor))
+    char_len_uni <- max(nchar(levels(all_cells$outs$wilcox_out_uni$factor)))
+
+    widths <- length(unique(all_cells$outs$wilcox_out_uni$cluster)) + char_len_uni / 4
+    pdf_and_png(p_uni_indiv, output_expr, paste0("linear_reg_uni_ALT_COMBINED_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor, scale = 3)
+
+    plot_list <- list()
+    for (i in list("AllComp")) {
+        all_cells$sub_wilcox_out <- all_cells$outs$wilcox_out_uni #|> dplyr::filter(lineage_group %in% i)
+
+        sub_mat_uni <- reshape2::acast(all_cells$sub_wilcox_out, lineage_group ~ factor, value.var = "coef")
+        sub_d_uni_cluster <- dist(sub_mat_uni / sqrt(rowSums(sub_mat_uni * sub_mat_uni)), method = "euclidean")
+        sub_uni_dendrogram_clusters <- hclust(sub_d_uni_cluster)
+
+
+        sub_uni_cluster_ordering <- sub_uni_dendrogram_clusters$labels[sub_uni_dendrogram_clusters$order]
+
+
+        all_cells$sub_wilcox_out$sig_binned_value <- factor(all_cells$sub_wilcox_out$binned_pval, levels = c(
+            "NS", "Significant (p<0.05)", "Significant (p<0.01)"
+        ))
+        all_cells$sub_wilcox_out$binned_pval <- factor(all_cells$sub_wilcox_out$binned_pval, levels = c("Depleted (<0.001)", "Depleted (<0.01)", "Depleted (0.05)", "NS", "Enriched (0.05)", "Enriched (<0.01)", "Enriched (<0.001)"))
+        #                low = "#290AD8", mid = "grey", high = "#A50021", limits = c(-0.31, 0.31),
+
+        plot_list[[i]] <- ggplot(all_cells$sub_wilcox_out) +
+            geom_point(aes(x = lineage_group, y = factor, fill = coef, size = sig_levels, shape = sig_levels), color = "#868686", show.legend = TRUE) +
+            scale_fill_gradient2(
+                low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.31, 0.31),
+                oob = squish
+            ) +
+            scale_size_manual(values = c("Significant (p<0.01)" = 7.5, "Significant (p<0.05)" = 6, "NS" = 4.25), drop = F) +
+            scale_shape_manual(values = c("Significant (p<0.01)" = 22, "Significant (p<0.05)" = 23, "NS" = 21), drop = F) +
+            theme_prism() +
+            xlab("Cluster") +
+            ylab("Factor") +
+            ggtitle(i) +
+            coord_fixed() +
+            guides(size = guide_legend(override.aes = list(colour = "grey", fill = "white"))) +
+            theme(
+                axis.text.x = element_text(
+                    size = 14 * 0.95,
+                    family = "sans", face = "bold",
+                    margin = margin(t = 0.8 * 14 / 4),
+                    angle = 90,
+                    vjust = 0.5,
+                    hjust = 1,
+                ),
+                axis.title.x = element_blank(),
+                plot.margin = unit(c(0, 1, 0, 0), "lines")
+            )
+    }
+
+    for (i in unique(all_cells$outs$wilcox_out_uni$cluster)) {
+        plot <- patchwork::wrap_plots(plot_list, ncol = length(list("AllComp")), byrow = T, guides = "collect", axes = "collect", axes_titles = "collect")
+    }
+    pdf_and_png(plot, output_expr, paste0("linear_reg_uni_ALT_COMBINED_FACETTED_GROUPS_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor, scale = 3)
+
+    env_list[[idx_name]] <- all_cells
+}
+```
+
+
+
+# Alternative where CD8+ and CD4+ populations are combined together as just 'T' cells. 
+
+```{r}
+source("source/Helper_Functions/COMMON_diff_abundance_functions.R", local = T)
+
+# baseline <- merged |> subset(VJ_INTERVAL == "Baseline")
+# Idents(baseline) <- baseline@meta.data[, cluster_group]
+#  baseline$pfs_risk <- paste0(baseline[[var_to_test]], "_", baseline[[var_to_test]])
+
+baseline@meta.data <- baseline@meta.data |> dplyr::mutate(lineage_group_combined_T = dplyr::case_when(
+    lineage_group %in% c("CD8", "CD4") ~ "T",
+    .default = lineage_group
+))
+
+counts <- table(baseline$public_id, baseline@meta.data[, "lineage_group_combined_T"])
+
+counts <- counts[, colSums(counts) != 0] # filter clusters with no cells... will show up because cluster vector is a factor
+cluster_size <- colSums(counts)
+counts <- counts |> as.data.frame()
+colnames(counts) <- c("public_id", "cluster", "Counts")
+md_bl_all_var <- baseline@meta.data |> dplyr::distinct(public_id, .keep_all = T)
+
+
+md_bl <- baseline@meta.data |>
+    dplyr::filter(VJ_INTERVAL == "Baseline") |>
+    dplyr::select(public_id, siteXbatch, dplyr::all_of(names(variable_info_structure)))
+
+md_bl <- md_bl |> dplyr::distinct(public_id, .keep_all = T)
+counts <- counts |> dplyr::left_join(md_bl, by = "public_id")
+
+cluster_md <- baseline@meta.data |> dplyr::distinct(lineage_group_combined_T)
+cluster_md$cluster <- cluster_md$lineage_group_combined_T
+cluster_md$lineage_group <- cluster_md$lineage_group_combined_T
+
+counts <- counts |> dplyr::left_join(cluster_md, by = "cluster")
+types_list <- list(
+    "LG-T Immune" = c("T", "M", "B", "Other", "Nk"),
+    "LG-T All NoPlasma" = c("T", "M", "B", "Other", "Nk", "E"),
+    "LG-T All" = c("T", "M", "B", "Other", "Nk", "P", "E")
+)
+file_name_list <- list(
+    "LG-T Immune" = "LINEAGE_GROUP_MERGED_T_immune_only",
+    "LG-T All NoPlasma" = "LINEAGE_GROUP_MERGED_TAll_NoPlasma",
+    "LG-T All" = "LINEAGE_GROUP_MERGED_T_all_cells"
+)
+
+for (idx_name in names(types_list)) {
+    all_cells <- new.env()
+
+    all_cells$counts <- counts |> dplyr::filter(lineage_group %in% types_list[[idx_name]])
+    all_cells$outs <- DiffAbun_Wrapper(all_cells$counts, variable_info_structure = variable_info_structure, DOMULTIVAR = F, method = "LINEAR", transform = "logit")
+
+
+    # all_cells$outs <- quickLinearAsinAndPlots(all_cells$counts, variable_info_structure)
+    write.csv(all_cells$outs$wilcox_out, file.path(output_expr, paste0("linear_reg_", file_name_list[[idx_name]], ".csv")))
+    write.csv(all_cells$outs$wilcox_out_uni, file.path(output_expr, paste0("linear_reg_UNI_", file_name_list[[idx_name]], ".csv")))
+
+    all_cells$outs$wilcox_out <- all_cells$outs$wilcox_out |> dplyr::filter(variable != "siteXbatch")
+    all_cells$cluster_md <- cluster_md
+    all_cells$cluster_md$subcluster_V03072023 <- all_cells$cluster_md$cluster
+
+    all_cells$outs$wilcox_out <- dplyr::left_join(all_cells$outs$wilcox_out, all_cells$cluster_md, by = "cluster")
+    all_cells$outs$wilcox_out_uni <- dplyr::left_join(all_cells$outs$wilcox_out_uni, all_cells$cluster_md, by = "cluster")
+
+    all_cells$outs$wilcox_out$p.val <- as.numeric(all_cells$outs$wilcox_out$p.val)
+    all_cells$outs$wilcox_out$coef <- as.numeric(all_cells$outs$wilcox_out$coef)
+
+    all_cells$outs$wilcox_out_uni$p.val <- as.numeric(all_cells$outs$wilcox_out_uni$p.val)
+    all_cells$outs$wilcox_out_uni$coef <- as.numeric(all_cells$outs$wilcox_out_uni$coef)
+
+
+    all_cells$outs$wilcox_out <- all_cells$outs$wilcox_out |> dplyr::mutate(binned_pval = dplyr::case_when(
+        p.val < 0.001 & coef > 0 ~ "Enriched (<0.001)",
+        p.val < 0.01 & coef > 0 ~ "Enriched (<0.01)",
+        p.val < 0.05 & coef > 0 ~ "Enriched (0.05)",
+        p.val < 0.001 & coef < 0 ~ "Depleted (<0.001)",
+        p.val < 0.01 & coef < 0 ~ "Depleted (<0.01)",
+        p.val < 0.05 & coef < 0 ~ "Depleted (0.05)",
+        .default = "NS"
+    ))
+
+    all_cells$outs$wilcox_out$binned_pval <- factor(all_cells$outs$wilcox_out$binned_pval, levels = c(
+        "Depleted (<0.001)", "Depleted (<0.01)", "Depleted (0.05)", "NS", "Enriched (0.05)", "Enriched (<0.01)", "Enriched (<0.001)"
+    ))
+
+    all_cells$outs$wilcox_out_uni <- all_cells$outs$wilcox_out_uni |> dplyr::mutate(binned_pval = dplyr::case_when(
+        p.val < 0.001 & coef > 0 ~ "Enriched (<0.001)",
+        p.val < 0.01 & coef > 0 ~ "Enriched (<0.01)",
+        p.val < 0.05 & coef > 0 ~ "Enriched (0.05)",
+        p.val < 0.001 & coef < 0 ~ "Depleted (<0.001)",
+        p.val < 0.01 & coef < 0 ~ "Depleted (<0.01)",
+        p.val < 0.05 & coef < 0 ~ "Depleted (0.05)",
+        .default = "NS"
+    ))
+
+    all_cells$outs$wilcox_out_uni$binned_pval <- factor(all_cells$outs$wilcox_out_uni$binned_pval, levels = c(
+        "Depleted (<0.001)", "Depleted (<0.01)", "Depleted (0.05)", "NS", "Enriched (0.05)", "Enriched (<0.01)", "Enriched (<0.001)"
+    ))
+
+
+
+    all_cells$outs$wilcox_out_uni <- all_cells$outs$wilcox_out_uni |> dplyr::mutate(sig_levels = dplyr::case_when(
+        p.val < 0.01 ~ "Significant (p<0.01)",
+        p.val < 0.05 ~ "Significant (p<0.05)",
+        .default = "NS"
+    ))
+
+    all_cells$outs$wilcox_out_uni$sig_levels <- factor(all_cells$outs$wilcox_out_uni$sig_levels, levels = c(
+        "NS", "Significant (p<0.05)", "Significant (p<0.01)"
+    ))
+
+
+    custom_fill_theme <- list(
+        "Enriched (<0.001)" = "#A50021",
+        "Enriched (<0.01)" = "#F76D5E",
+        "Enriched (0.05)" = "#FFAD72",
+        "Depleted (<0.001)" = "#290AD8",
+        "Depleted (<0.01)" = "#3FA0FF",
+        "Depleted (0.05)" = "#AAF7FF",
+        "NS" = "grey"
+    )
+
+    custom_fill_theme_continuous <- list(
+        "Enriched (<0.001)" = "#A50021",
+        "Enriched (<0.01)" = "#F76D5E",
+        "Enriched (0.05)" = "#FFAD72",
+        "Depleted (<0.001)" = "#290AD8",
+        "Depleted (<0.01)" = "#3FA0FF",
+        "Depleted (0.05)" = "#AAF7FF",
+        "NS" = "#f5f5f5"
+    )
+    library(reshape2)
+
+    mat_multi <- reshape2::acast(all_cells$outs$wilcox_out, lineage_group ~ factor, value.var = "coef")
+    d_multi_cluster <- dist(mat_multi / sqrt(rowSums(mat_multi * mat_multi)), method = "euclidean")
+    multi_dendrogram_clusters <- hclust(d_multi_cluster)
+    d_multi_factor <- dist(t(mat_multi) / sqrt(rowSums(t(mat_multi) * t(mat_multi))), method = "euclidean")
+    multi_dendrogram_factor <- hclust(d_multi_factor)
+
+    mat_uni <- reshape2::acast(all_cells$outs$wilcox_out_uni, lineage_group ~ factor, value.var = "coef")
+    d_uni_cluster <- dist(mat_uni / sqrt(rowSums(mat_uni * mat_uni)), method = "euclidean")
+    uni_dendrogram_clusters <- hclust(d_uni_cluster)
+    d_uni_factor <- dist(t(mat_uni) / sqrt(rowSums(t(mat_uni) * t(mat_uni))), method = "euclidean")
+    uni_dendrogram_factor <- hclust(d_uni_factor)
+
+    uni_cluster_ordering <- uni_dendrogram_clusters$labels[uni_dendrogram_clusters$order]
+    uni_factor_ordering <- unique(all_cells$outs$wilcox_out_uni$factor) # factor_names # uni_dendrogram_factor$labels[uni_dendrogram_factor$order]
+
+    # multi_cluster_ordering <- uni_dendrogram_clusters$labels[uni_dendrogram_clusters$order]
+    # multi_factor_ordering <- factor_names # multi_dendrogram_factor$labels[multi_dendrogram_factor$order]
+
+
+    # all_cells$outs$wilcox_out$factor <- factor(all_cells$outs$wilcox_out$factor, levels = multi_factor_ordering)
+    # all_cells$outs$wilcox_out$cellID_short <- factor(all_cells$outs$wilcox_out$cellID_short, levels = multi_cluster_ordering)
+
+    all_cells$outs$wilcox_out_uni$factor <- factor(all_cells$outs$wilcox_out_uni$factor, levels = uni_factor_ordering)
+    all_cells$outs$wilcox_out_uni$lineage_group <- factor(all_cells$outs$wilcox_out_uni$lineage_group, levels = uni_cluster_ordering)
+
+    heights <- length(unique(all_cells$outs$wilcox_out_uni$factor))
+    char_len_uni <- max(nchar(levels(all_cells$outs$wilcox_out_uni$factor)))
+
+    widths <- length(unique(all_cells$outs$wilcox_out_uni$cluster)) + char_len_uni / 4
+    scale_factor <- 12
+
+    p_uni_indiv <- ggplot(all_cells$outs$wilcox_out_uni) +
+        geom_point(aes(x = lineage_group, y = factor, fill = coef, size = sig_levels, shape = sig_levels), color = "#868686") +
+        scale_fill_gradient2(
+            low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.31, 0.31),
+            oob = squish
+        ) +
+        scale_size_manual(values = c("Significant (p<0.01)" = 7.5, "Significant (p<0.05)" = 6, "NS" = 4.25), drop = F) +
+        scale_shape_manual(values = c("Significant (p<0.01)" = 22, "Significant (p<0.05)" = 23, "NS" = 21), drop = F) +
+        theme_prism() +
+        xlab("Cluster") +
+        ylab("Factor") +
+        ggtitle("Univariate Linear Model (Corr sXb)") +
+        coord_fixed() +
+        guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+        theme(axis.text.x = element_text(
+            size = 14 * 0.95,
+            family = "sans", face = "bold",
+            margin = margin(t = 0.8 * 14 / 4),
+            angle = 90,
+            vjust = 0.5,
+            hjust = 1,
+        ))
+
+    # p_uni_comb <- (p_uni + theme(axis.text.x = element_blank(), axis.title.x = element_blank())) / (p_uni_2 + theme(plot.title = element_blank()))
+    heights <- length(unique(all_cells$outs$wilcox_out_uni$factor))
+    char_len_uni <- max(nchar(levels(all_cells$outs$wilcox_out_uni$factor)))
+
+    widths <- length(unique(all_cells$outs$wilcox_out_uni$cluster)) + char_len_uni / 4
+
+    # pdf_and_png(p_uni, output_expr, paste0("linear_reg_uni_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor, scale = 3)
+    # pdf_and_png(p_uni_2, output_expr, paste0("linear_reg_uni_LOGFC_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor, scale = 3)
+    # pdf_and_png(p_uni_comb, output_expr, paste0("linear_reg_uni_COMBINED_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor * 2, scale = 3)
+    pdf_and_png(p_uni_indiv, output_expr, paste0("linear_reg_uni_ALT_COMBINED_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor, scale = 3)
+
+    plot_list <- list()
+    for (i in list("AllComp")) {
+        all_cells$sub_wilcox_out <- all_cells$outs$wilcox_out_uni #|> dplyr::filter(lineage_group %in% i)
+
+        sub_mat_uni <- reshape2::acast(all_cells$sub_wilcox_out, lineage_group ~ factor, value.var = "coef")
+        sub_d_uni_cluster <- dist(sub_mat_uni / sqrt(rowSums(sub_mat_uni * sub_mat_uni)), method = "euclidean")
+        sub_uni_dendrogram_clusters <- hclust(sub_d_uni_cluster)
+
+
+        sub_uni_cluster_ordering <- sub_uni_dendrogram_clusters$labels[sub_uni_dendrogram_clusters$order]
+
+
+        # all_cells$sub_wilcox_out$factor <- factor(all_cells$sub_wilcox_out$factor, levels = uni_factor_ordering)
+        # all_cells$sub_wilcox_out$cellID_short <- factor(all_cells$sub_wilcox_out$cellID_short, levels = sub_uni_cluster_ordering)
+
+
+        all_cells$sub_wilcox_out$sig_binned_value <- factor(all_cells$sub_wilcox_out$binned_pval, levels = c(
+            "NS", "Significant (p<0.05)", "Significant (p<0.01)"
+        ))
+        all_cells$sub_wilcox_out$binned_pval <- factor(all_cells$sub_wilcox_out$binned_pval, levels = c("Depleted (<0.001)", "Depleted (<0.01)", "Depleted (0.05)", "NS", "Enriched (0.05)", "Enriched (<0.01)", "Enriched (<0.001)"))
+        #                low = "#290AD8", mid = "grey", high = "#A50021", limits = c(-0.31, 0.31),
+
+        plot_list[[i]] <- ggplot(all_cells$sub_wilcox_out) +
+            geom_point(aes(x = lineage_group, y = factor, fill = coef, size = sig_levels, shape = sig_levels), color = "#868686", show.legend = TRUE) +
+            scale_fill_gradient2(
+                low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.31, 0.31),
+                oob = squish
+            ) +
+            scale_size_manual(values = c("Significant (p<0.01)" = 7.5, "Significant (p<0.05)" = 6, "NS" = 4.25), drop = F) +
+            scale_shape_manual(values = c("Significant (p<0.01)" = 22, "Significant (p<0.05)" = 23, "NS" = 21), drop = F) +
+            theme_prism() +
+            xlab("Cluster") +
+            ylab("Factor") +
+            ggtitle(i) +
+            coord_fixed() +
+            guides(size = guide_legend(override.aes = list(colour = "grey", fill = "white"))) +
+            theme(
+                axis.text.x = element_text(
+                    size = 14 * 0.95,
+                    family = "sans", face = "bold",
+                    margin = margin(t = 0.8 * 14 / 4),
+                    angle = 90,
+                    vjust = 0.5,
+                    hjust = 1,
+                ),
+                axis.title.x = element_blank(),
+                plot.margin = unit(c(0, 1, 0, 0), "lines")
+            )
+    }
+
+    for (i in unique(all_cells$outs$wilcox_out_uni$cluster)) {
+        plot <- patchwork::wrap_plots(plot_list, ncol = length(list("AllComp")), byrow = T, guides = "collect", axes = "collect", axes_titles = "collect")
+    }
+    pdf_and_png(plot, output_expr, paste0("linear_reg_uni_ALT_COMBINED_FACETTED_GROUPS_", file_name_list[[idx_name]]), pdfWidth = 2 + widths / scale_factor, pdfHeight = 3 + heights / scale_factor, scale = 3)
+
+    env_list[[idx_name]] <- all_cells
+}
+```
+
+```{r}
+types_list <- list(
+    "CD3+ Cells" = c("CD8", "CD4"),
+    "Myeloid Cells" = "M",
+    "B Cells" = "B",
+    "Nk" = "Nk",
+    "Immune" = c("CD8", "CD4", "M", "B", "Other", "Nk"),
+    "LG CD3+ Cells" = c("CD8", "CD4"),
+    "LG Immune" = c("CD8", "CD4", "M", "B", "Other", "Nk"),
+    "LG All NoPlasma" = c("CD8", "CD4", "M", "B", "Other", "Nk", "E"),
+    "LG All" = c("CD8", "CD4", "M", "B", "Other", "Nk", "P", "E"),
+    "LG-T Immune" = c("T", "M", "B", "Other", "Nk"),
+    "LG-T All NoPlasma" = c("T", "M", "B", "Other", "Nk", "E"),
+    "LG-T All" = c("T", "M", "B", "Other", "Nk", "P", "E")
+)
+```
+
+### Figure 4b, panel formatting
+Figure 4b, final output, with revised differential abundance methodology
+Immune Only Fraction
+
+```{r}
+# alternative
+
+idx_name <- "LG-T Immune"
+all_cells <- env_list[[idx_name]]
+tmp <- all_cells$outs$counts_uni[["progression_group"]]
+wilcox_out_uni <- all_cells$outs$wilcox_out_uni |> dplyr::filter(variable %in% c("progression_group"))
+
+grouping_var <- "progression_group"
+
+per_clust_max <- tmp |>
+    dplyr::group_by(cluster, progression_group) |>
+    dplyr::summarise(Q1 = quantile(prop, 0.25), Q3 = quantile(prop, 0.75), IQR = Q3 - Q1, upper = min(max(prop), Q3 + 1.5 * IQR), lower = max(min(prop), Q1 - 1.5 * IQR)) |>
+    dplyr::group_by(cluster) |>
+    dplyr::summarise(lower_min = min(lower), upper_max = max(upper), IQR_max = max(IQR), y.position = upper_max + 0.1, y.position.alt = upper_max + 0.1 * IQR_max)
+
+tmp_out <- wilcox_out_uni |> dplyr::left_join(per_clust_max, by = "cluster")
+tmp_out$p <- tmp_out$p.val
+
+tmp_out$group1 <- "NP"
+tmp_out$group2 <- "RP"
+
+tmp_t <- tmp |> dplyr::filter(cluster == "T")
+tmp_b <- tmp |> dplyr::filter(cluster == "B")
+tmp_m <- tmp |> dplyr::filter(cluster == "M")
+
+# df_p_val <- tmp |>
+#     rstatix::group_by(cluster) %>%
+#     rstatix::wilcox_test(as.formula(sprintf("prop ~ %s", "progression_group")), detailed = T)
+
+
+
+tmp_out_t <- tmp_out |> dplyr::filter(cluster == "T")
+tmp_out_b <- tmp_out |> dplyr::filter(cluster == "B")
+tmp_out_m <- tmp_out |> dplyr::filter(cluster == "M")
+
+
+p_t <- ggplot(tmp_t) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_t, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    scale_y_continuous(limits = c(0, 1)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    ylab("Immune Cell Fraction") +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle("T Cell") +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+
+p_b <- ggplot(tmp_b) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    stat_pvalue_manual(tmp_out_b, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    scale_y_continuous(limits = c(0, tmp_out_b$y.position + 0.05)) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    theme(axis.title.y = element_blank()) +
+    ggtitle("B Cell") +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+
+p_m <- ggplot(tmp_m) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_m, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    scale_y_continuous(limits = c(0, tmp_out_m$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    theme(axis.title.y = element_blank()) +
+    ggtitle("Myeloid") +
+    xlab("Progression Group") +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+p_indp <- p_t + p_m + p_b
+
+pdf_and_png(p_indp, output_expr, "FIGURE4B_major_cell_types_t_b_m_ind", pdfHeight = H_HALF, pdfWidth = W_FULL, scale = 3, SAVE_RDS = F)
+```
+
+### Supplementary Figure - CD8 T cell percentage of CD3+ Cells
+Supplemental figure, final output, with revised differential abundance methodology
+CD3+ Fraction
+
+```{r}
+# alternative
+
+idx_name <- "LG CD3+ Cells"
+all_cells <- env_list[[idx_name]]
+tmp <- all_cells$outs$counts_uni[["progression_group"]]
+wilcox_out_uni <- all_cells$outs$wilcox_out_uni |> dplyr::filter(variable %in% c("progression_group"))
+
+grouping_var <- "progression_group"
+
+per_clust_max <- tmp |>
+    dplyr::group_by(cluster, progression_group) |>
+    dplyr::summarise(Q1 = quantile(prop, 0.25), Q3 = quantile(prop, 0.75), IQR = Q3 - Q1, upper = min(max(prop), Q3 + 1.5 * IQR), lower = max(min(prop), Q1 - 1.5 * IQR)) |>
+    dplyr::group_by(cluster) |>
+    dplyr::summarise(lower_min = min(lower), upper_max = max(upper), IQR_max = max(IQR), y.position = upper_max + 0.1, y.position.alt = upper_max + 0.1 * IQR_max)
+
+tmp_out <- wilcox_out_uni |> dplyr::left_join(per_clust_max, by = "cluster")
+tmp_out$p <- tmp_out$p.val
+
+tmp_out$group1 <- "NP"
+tmp_out$group2 <- "RP"
+
+tmp_t <- tmp |> dplyr::filter(cluster == "CD8")
+
+
+# df_p_val <- tmp |>
+#     rstatix::group_by(cluster) %>%
+#     rstatix::wilcox_test(as.formula(sprintf("prop ~ %s", "progression_group")), detailed = T)
+
+
+
+tmp_out_t <- tmp_out |> dplyr::filter(cluster == "CD8")
+
+
+p_t <- ggplot(tmp_t) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_t, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    scale_y_continuous(limits = c(0, 1)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    ylab("Fraction of CD3+ Cells") +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle("CD8+ T Cells") +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+pdf_and_png(p_t, output_expr, "Supplemental_CD8_Positive_Fraction", pdfHeight = H_FULL, pdfWidth = W_FULL, scale = 3, SAVE_RDS = F)
+```
+
+
+
+
+
+
+### Figure 4F Rendering (Select CD3+ clusters enriched in NP or RP)
+Percentage of CD3+ Cells
+```{r}
+# alternative
+
+tmp_info <- tmp |> dplyr::distinct(cluster, cellID_short, cellID_long)
+tmp_out <- tmp_out |> dplyr::left_join(tmp_info, by = "cluster")
+
+tmp_20 <- tmp |> dplyr::filter(cluster == "NkT.2.0")
+tmp_21 <- tmp |> dplyr::filter(cluster == "NkT.2.1")
+tmp_6 <- tmp |> dplyr::filter(cluster == "NkT.6")
+tmp_31 <- tmp |> dplyr::filter(cluster == "NkT.3.1")
+
+tmp_out_20 <- tmp_out |> dplyr::filter(cluster == "NkT.2.0")
+tmp_out_21 <- tmp_out |> dplyr::filter(cluster == "NkT.2.1")
+tmp_out_6 <- tmp_out |> dplyr::filter(cluster == "NkT.6")
+tmp_out_31 <- tmp_out |> dplyr::filter(cluster == "NkT.3.1")
+
+p_t_6 <- ggplot(tmp_6) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_6, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    scale_y_continuous(limits = c(0, tmp_out_6$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    theme(axis.title.x = element_blank()) +
+    ylab(bquote(atop("Proportion", "of" ~ CD3^"+" ~ "T Cells"))) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle(tmp_6$cellID_short) +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+p_t_31 <- ggplot(tmp_31) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_31, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    scale_y_continuous(limits = c(0, tmp_out_31$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    theme(axis.title.x = element_blank()) +
+    theme(axis.title.y = element_blank()) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle(tmp_31$cellID_short) +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+p_t_20 <- ggplot(tmp_20) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_20, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    scale_y_continuous(limits = c(0, tmp_out_20$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    theme(axis.title.x = element_blank()) +
+    ylab(bquote(atop("Proportion", "of" ~ CD3^"+" ~ "T Cells"))) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle(tmp_20$cellID_short) +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+p_t_21 <- ggplot(tmp_21) +
+    geom_boxplot(outlier.shape = NA, alpha = 1, width = 0.4, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    geom_quasirandom(shape = 1, show.legend = F, alpha = 0.5, aes(x = !!sym(grouping_var), fill = !!sym(grouping_var), color = !!sym(grouping_var), group = !!sym(grouping_var), y = prop)) +
+    stat_pvalue_manual(tmp_out_21, label = "{scales::pvalue(p)}", size = 5, y.position = "y.position.alt", hide.ns = T) +
+    theme_prism() +
+    scale_y_continuous(limits = c(0, tmp_out_21$y.position + 0.05)) +
+    scale_fill_manual(values = fill_theme_binary) +
+    scale_color_manual(values = color_theme_binary) +
+    theme(axis.title.x = element_blank()) +
+    theme(axis.title.y = element_blank()) +
+    NoLegend() +
+    coord_cartesian(clip = "off") +
+    theme(axis.title.x = element_blank()) +
+    ggtitle(tmp_21$cellID_short) +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+
+p_naive <- p_t_6 + p_t_31
+p_cyto <- p_t_20 + p_t_21
+
+# The NULLS just add some vertical padding without messing with plot margins
+p_grid <- cowplot::plot_grid(NULL, p_naive, NULL, p_cyto, nrow = 4, ncol = 1, labels = c("", "Less Differentiated", "", "More Differentiated"), label_size = 18, label_x = 0.5, hjust = 0, vjust = 0.5, rel_heights = c(0.025, 1, 0.025, 1))
+pdf_and_png(p_grid, output_expr, "FIGURE4F_select_cd8cd4_clusters", pdfHeight = H_FULL, pdfWidth = W_FULL, scale = 3, SAVE_RDS = F)
+```

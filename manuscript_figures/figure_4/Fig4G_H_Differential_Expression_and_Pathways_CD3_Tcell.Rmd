@@ -9,8 +9,7 @@ output:
 ---
 
 Performs differential expression analysis and pathway analysis across all CD3+ cells. Figures 4g, h
-
-Note - as limma creates a dense matrix, this will take a large amount of RAM to run 
+Revisions: ISG15 renamed to IFN1
 
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(
@@ -55,7 +54,7 @@ fit <- lmFit(expr, design)
 rm(expr)
 gc()
 # Make a contrast for NP - RP (positive - NP enriched, negative - RP enriched), and fit with limma trend = TrUE
-x <- c("progression_groupRP - progression_groupNP")
+x <- c("progression_groupRP - progression_groupNP") # <column_name><column_value> column chemistry chemistry, column value 3prime chemistry3prime chemistry3
 contrast <- makeContrasts(contrasts = x, levels = design) # NP is positive, RP is negative
 fit <- contrasts.fit(fit, contrast)
 fit <- eBayes(fit, trend = TRUE, robust = TRUE)
@@ -71,7 +70,27 @@ forVolcano$p_val <- forVolcano$P
 
 nprp <- forVolcano
 
-ISG15_lab <- c("IFI6", "IFIT3", "IFI44L", "ISG15", "MX1")
+ISG15_lab <- c(
+    "IFI44L",
+    "ISG15",
+    "XAF1",
+    "IFI6",
+    "MX1",
+    "LY6E",
+    "EIF2AK2",
+    "STAT1",
+    "MX2",
+    "IFIT3",
+    "ISG20",
+    "OAS1",
+    "IFI44",
+    "IRF7",
+    "IFIT1",
+    "OAS3",
+    "IFI35",
+    "OAS2",
+    "IFI27"
+)
 NAIVE_lab <- c("LTB", "TCF7", "SELL")
 CYTOTOX_lab <- c("GZMH", "KLRD1", "NKG7", "FGFBP2", "CCL5", "GZMB", "GNLY", "GZMA", "CD8A", "PRF1", "CST7", "CTSW")
 STRESS_lab <- c("TXNIP", "FKBP5", "TSC22D3", "KLF6")
@@ -93,7 +112,7 @@ names(keyvals.color)[keyvals.color == "grey"] <- "Other"
 names(keyvals.color)[keyvals.color == colors_volcano[[2]]] <- "Stress"
 names(keyvals.color)[keyvals.color == colors_volcano[[1]]] <- "Cytotoxic"
 names(keyvals.color)[keyvals.color == colors_volcano[[3]]] <- "Naive"
-names(keyvals.color)[keyvals.color == colors_volcano[[4]]] <- "ISG15"
+names(keyvals.color)[keyvals.color == colors_volcano[[4]]] <- "IFN1"
 
 keyvals.alpha <- ifelse(
     rownames(nprp) %in% ISG15_lab, 1,
@@ -118,7 +137,7 @@ names(keyvals.shape)[keyvals.shape == 1] <- "Other"
 names(keyvals.shape)[keyvals.shape == 2] <- "Stress"
 names(keyvals.shape)[keyvals.shape == 3] <- "Cytotoxic"
 names(keyvals.shape)[keyvals.shape == 17] <- "Naive"
-names(keyvals.shape)[keyvals.shape == 64] <- "ISG15"
+names(keyvals.shape)[keyvals.shape == 64] <- "IFN1"
 
 selectLab <- rownames(nprp |> dplyr::filter(p_val < 10e-50 & abs(avg_log2FC) > 0.1))
 
@@ -212,7 +231,7 @@ write.csv(cd8_gsea, file.path(output_volcano, "nkt_gsea_results.csv"))
 filt <- cd8_gsea |> dplyr::filter(p.adjust < 0.1)
 
 
-results <- filt@result
+results <- filt@result |> arrange(NES)
 results <- cd8_gsea@result |> arrange(NES)
 
 results <- results |> dplyr::filter(Description %in% c(
@@ -279,8 +298,4 @@ for (idx in 1:nrow(results)) {
 
     write.csv(filt_markers, file.path(output_leadingedge, filename))
 }
-```
-
-
-```{r}
 ```

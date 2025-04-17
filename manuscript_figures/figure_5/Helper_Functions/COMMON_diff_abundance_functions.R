@@ -4,7 +4,505 @@ library(effectsize)
 
 # Implementation of various methods to perform differential abundance testing
 
-# Computes the wilcoxon rank sum test of all clusters between two groups. Returns a log2FC and a ranked-biserial correlation coefficient
+# Function to process the 'variable_info_structure' object, which lists which variables should be considered in the model.
+# 'Univariate' refers to models which only adjust for the categories present in the covariate itself, along with a batch covariate. This is what is reported for most analyses.
+
+# The 'multivariate' models adjust for all covariates listed in variable_info_structure which set the $include_multivariate flag. 
+prepare_counts_object <- function(counts, variable_info_structure, KEEP_UNLISTED_FACTORS_IN_UNVARIATE_MODELS = F) {
+    function_string <- ""
+    coef_list <- list()
+    coef_list_uni <- list()
+
+    VALID_VARIABLE_INFO_STRUCTURE_ENTRIES <- c(
+        "isFactor",
+        "factorLevels",
+        "perform_univariate",
+        "univariate_batch",
+        "include_multivariate",
+        "variable_name",
+        "perform_contrasts"
+    )
+    multivar_variable_list <- c()
+    counts_orig <- counts
+    counts_uni <- list()
+    base_var_uni <- list()
+    input_var_uni <- list()
+
+    FLAG_PERFORM_MULTIVARIATE <- FALSE
+    for (var in names(variable_info_structure)) {
+        # Check variable exists
+        stopifnot(all(names(variable_info_structure[[var]]) %in% VALID_VARIABLE_INFO_STRUCTURE_ENTRIES))
+        stopifnot(var %in% colnames(counts))
+        if (variable_info_structure[[var]]$perform_univariate) {
+            counts_uni[[var]] <- counts_orig
+        }
+
+        if (variable_info_structure[[var]]$include_multivariate) {
+            FLAG_PERFORM_MULTIVARIATE <- TRUE
+            multivar_variable_list <- c(multivar_variable_list, var)
+            if (function_string != "") {
+                function_string <- paste0(function_string, "+", var)
+            } else if (is.na(function_string) || is.null(function_string)) {
+                stop("Function string has become invalid")
+            } else {
+                function_string <- var
+            }
+        }
+
+
+        if (variable_info_structure[[var]]$isFactor) {
+            if (is.null(variable_info_structure[[var]]$factorLevels)) {
+                if (variable_info_structure[[var]]$include_multivariate) {
+                    counts[[var]] <- factor(counts[[var]])
+                }
+                if (variable_info_structure[[var]]$perform_univariate) {
+                    counts_uni[[var]][[var]] <- factor(counts_uni[[var]])
+                }
+            } else {
+                if (variable_info_structure[[var]]$include_multivariate) {
+                    # Filter columns that do not include valid/desired levels out of the multivariate counts.
+                    counts <- counts |> dplyr::filter(!!sym(var) %in% variable_info_structure[[var]]$factorLevels)
+                    counts[[var]] <- factor(counts[[var]], levels = c(variable_info_structure[[var]]$factorLevels))
+                }
+                if (variable_info_structure[[var]]$perform_univariate) {
+                    # Filter columns that do not include valid/desired levels out of the univariate counts specifically for this covariate.
+                    counts_uni[[var]] <- counts_uni[[var]] |> dplyr::filter(!!sym(var) %in% variable_info_structure[[var]]$factorLevels)
+                    counts_uni[[var]][[var]] <- factor(counts_uni[[var]][[var]], levels = c(variable_info_structure[[var]]$factorLevels))
+                }
+            }
+            if (variable_info_structure[[var]]$include_multivariate) {
+                # This is what the covariate will be named in the limma output.
+                coef_list[[var]] <- paste0(var, levels(counts[[var]])[-1])
+            }
+            if (variable_info_structure[[var]]$perform_univariate) {
+                coef_list_uni[[var]] <- paste0(var, levels(counts_uni[[var]][[var]])[-1])
+                input_var_uni[[var]] <- levels(counts_uni[[var]][[var]])[-1]
+                base_var_uni[[var]] <- levels(counts_uni[[var]][[var]])[1]
+            }
+        } else {
+            # Remove NA values from the univariate counts model.
+            counts_uni[[var]] <- counts_uni[[var]][!is.na(counts_uni[[var]][[var]]), ]
+            coef_list[[var]] <- var
+            coef_list_uni[[var]] <- var
+            base_var_uni[[var]] <- var
+            input_var_uni[[var]] <- var
+        }
+    }
+
+    out <- list(
+        "counts" = counts,
+        "counts_uni" = counts_uni,
+        "function_string" = function_string,
+        "coef_list" = coef_list,
+        "coef_list_uni" = coef_list_uni,
+        "base_var_uni" = base_var_uni,
+        "input_var_uni" = input_var_uni,
+        "multivar_variable_list" = multivar_variable_list,
+        "FLAG_PERFORM_MULTIVARIATE" = FLAG_PERFORM_MULTIVARIATE
+    )
+    return(out)
+}
+
+# This fits a linear model to cluster proportions. 'counts' contains the counts of cells per cluster, per patient, along with relevant metadata on each patient. variable_info_structure controls the contents of the model.
+# For the paper, 'transform' is set to 'logit' transform.
+# For all analyses, the output of the 'univariate' block is used.
+# Additional settings present are implemented to accomodate other analyses outside of this paper.
+clusterLinearArcsinTest <- function(counts, cluster_filter = NULL, variable_info_structure, transform = "logit", USE_ALT_BATCH_CORRECTION_STRATEGY = FALSE, logit_adjust_factor = 0.025) { # , #function_string = "progression_group") {
+
+    # Not used - filtering is currently done prior 
+    if (!is.null(cluster_filter)) {
+        counts <- counts |> dplyr::filter(cluster %in% cluster_filter)
+    }
+
+    # Get cluster size
+    cluster_size <- counts |>
+        dplyr::group_by(cluster) |>
+        dplyr::summarise(cluster_size = sum(Counts))
+
+    counts <- dplyr::left_join(counts, cluster_size)
+
+    # remove empty clusters
+    counts <- counts |>
+        dplyr::filter(cluster_size != 0) |>
+        droplevels()
+
+    # pseudocount <- 0.5
+
+    # prop : counts / pat_total
+    # arcsin_prop : arcsin sqrt transform, as in the propeller package
+    # pseudo_prop : (counts + pseudocount) / (pat_total + pseudocount) - initial testing
+    # logit_prop : Using car package to perform logit transformation with default adjustment to handle values near 0/1
+    # logit_prop_propeller : logit transform using a pseudocount
+    counts <- counts |>
+        dplyr::group_by(public_id) |>
+        dplyr::summarise(pat_total = sum(Counts), pat_total_offset = sum(Counts + pseudocount)) |>
+        dplyr::right_join(counts) |>
+        dplyr::filter(pat_total != 0) |> # remove patients with zero cells in group
+        dplyr::mutate(
+            prop = Counts / pat_total,
+            arcsin_prop = asin(sqrt(prop)),
+            pseudo_prop = (Counts + pseudocount) / pat_total_offset,
+            logit_prop = car::logit(prop, adjust = 0.025), # Force to default adjust parameter
+            logit_prop_propeller = log(pseudo_prop / (1 - pseudo_prop))
+        )
+
+    # Setup matrices for limma model
+    restructured <- prepare_counts_object(counts, variable_info_structure)
+    counts_facetted <- restructured[["counts"]]
+    counts_univariates <- restructured[["counts_uni"]]
+
+    function_string <- restructured[["function_string"]]
+    coef_list <- restructured[["coef_list"]]
+    coef_list_uni <- restructured[["coef_list_uni"]]
+    input_var_uni <- restructured[["input_var_uni"]]
+    base_var_uni <- restructured[["base_var_uni"]]
+
+    multivar_variable_list <- restructured[["multivar_variable_list"]]
+    df <- data.frame(matrix(ncol = 6, nrow = 0))
+    df_uni <- data.frame(matrix(ncol = 6, nrow = 0))
+
+    model_uni <- list()
+    model_multi <- list()
+
+    model_uni[["lmfit"]] <- list()
+
+    model_uni[["ebayes"]] <- list()
+
+    model_multi[["lmfit"]] <- list()
+
+    model_multi[["ebayes"]] <- list()
+
+
+    for (clust in unique(counts_facetted$cluster)) {
+        # Returns a multivariate model for covariates with 'include_multivariate' set to TRUE. This paper primarily utilizes the 'univariate' outputs.
+        model_uni[["lmfit"]][[clust]] <- list()
+        model_uni[["ebayes"]][[clust]] <- list()
+
+        tmp <- counts_facetted |> dplyr::filter(cluster == clust)
+
+        if (restructured[["FLAG_PERFORM_MULTIVARIATE"]]) {
+            design <- model.matrix(as.formula(paste0("~", function_string)), data = tmp)
+
+            if (transform == "asin") {
+                fit <- lmFit(tmp$arcsin_prop, design)
+            } else if (transform == "logit") {
+                fit <- lmFit(tmp$logit_prop, design)
+            } else if (transform == "identity") {
+                fit <- lmFit(tmp$prop, design)
+            }
+            model_multi[["lmfit"]][[clust]] <- fit
+
+            fit <- eBayes(fit, robust = T)
+            model_multi[["ebayes"]][[clust]] <- fit
+            for (i in multivar_variable_list) {
+                for (j in coef_list[[i]]) {
+                    tt <- topTable(fit, coef = j)
+                    d <- c(clust, i, j, tt[["logFC"]], tt[["P.Value"]], tt[["t"]])
+                    df <- rbind(df, d)
+                }
+            }
+        }
+
+        # Univariate models
+        for (uni in names(variable_info_structure)) {
+            uni_do_contrasts <- (!is.null(variable_info_structure[[uni]][["perform_contrasts"]]) && variable_info_structure[[uni]][["perform_contrasts"]])
+
+            if (variable_info_structure[[uni]]$perform_univariate) {
+                tmp_uni <- counts_univariates[[uni]] |> dplyr::filter(cluster == clust)
+
+                if (!is.null(variable_info_structure[[uni]]$univariate_batch) && !is.na(variable_info_structure[[uni]]$univariate_batch)) {
+                    if (USE_ALT_BATCH_CORRECTION_STRATEGY) {
+                        fs <- paste0(uni, "*", variable_info_structure[[uni]]$univariate_batch)
+                    } else {
+                        fs <- paste0(uni, "+", variable_info_structure[[uni]]$univariate_batch)
+                    }
+                } else {
+                    fs <- paste0(uni)
+                }
+
+                if (uni_do_contrasts) {
+                    design_uni <- model.matrix(as.formula(paste0("~ 0 +", fs)), data = tmp_uni)
+                } else {
+                    design_uni <- model.matrix(as.formula(paste0("~", fs)), data = tmp_uni)
+                }
+
+                # Special case handling for an interaction term between a batch covariate and a covariate of interest. This is not utilized for this analysis.
+                if (USE_ALT_BATCH_CORRECTION_STRATEGY) {
+                    # colnames(design_uni) <- make.names(colnames(design_uni))
+
+                    # if (transform == "asin") {
+                    #     fit_uni <- lmFit(tmp_uni$arcsin_prop, design_uni)
+
+                    #     # only use when needed. Can calculate for limma for the case with no intercept.
+                    #     fit_for_rsqrd <- lm(as.formula(paste0("arcsin_prop ~", fs)), tmp_uni)
+                    #     fit_for_rsqrd_intercept <- lm(as.formula(paste0("arcsin_prop ~  0 +", fs)), tmp_uni)
+                    # } else if (transform == "logit") {
+                    #     fit_uni <- lmFit(tmp_uni$logit_prop, design_uni)
+                    #     fit_for_rsqrd <- lm(as.formula(paste0("logit_prop ~", fs)), tmp_uni)
+                    #     fit_for_rsqrd_intercept <- lm(as.formula(paste0("logit_prop ~  0 +", fs)), tmp_uni)
+                    # } else if (transform == "identity") {
+                    #     fit_uni <- lmFit(tmp_uni$prop, design_uni)
+                    #     fit_for_rsqrd <- lm(as.formula(paste0("prop ~", fs)), tmp_uni)
+                    #     fit_for_rsqrd_intercept <- lm(as.formula(paste0("prop ~  0 +", fs)), tmp_uni)
+                    # }
+                    # model_uni[["lmfit"]][[clust]][[uni]] <- fit_uni
+
+                    # factor_name <- paste0(uni, variable_info_structure[[uni]][["factorLevels"]][[2]]) |> make.names()
+                    # uni_batch_variable <- variable_info_structure[[uni]]$univariate_batch
+                    # uni_batch_levels <- unique(tmp_uni[[variable_info_structure[[uni]]$univariate_batch]])
+                    # num_levels <- length(uni_batch_levels)
+
+                    # contrast_base_string <- factor_name
+
+                    # contrast_interaction_string <- ""
+                    # for (batch_idx in 2:num_levels) {
+                    #     if (batch_idx != 2) {
+                    #         contrast_interaction_string <- paste0(contrast_interaction_string, " + ")
+                    #     }
+                    #     contrast_interaction_string <- paste0(contrast_interaction_string, factor_name, ".", uni_batch_variable, uni_batch_levels[[batch_idx]])
+                    # }
+                    # contrast_interaction_string <- paste0("(", contrast_interaction_string, ")/", num_levels)
+
+                    # avg_effect_contr_full <- paste0(contrast_base_string, " + ", contrast_interaction_string)
+
+                    # # browser()
+                    # avg_effect_cont <- makeContrasts(
+                    #     contrasts = avg_effect_contr_full,
+                    #     levels = colnames(design_uni)
+                    # )
+
+
+                    # # avg_effect_cont <- makeContrasts(
+                    # #     contrasts = paste0(
+                    # #         paste0(factor_name),
+                    # #         "+ (",
+                    # #         paste0(factor_name, ".Study_SiteMAYO"),
+                    # #         "+",
+                    # #         paste0(factor_name, ".Study_SiteMSSM"),
+                    # #         "+",
+                    # #         paste0(factor_name, ".Study_SiteWUSTL"),
+                    # #         ")/4"
+                    # #     ),
+                    # #     levels = colnames(design_uni)
+                    # # )
+                    # # if (uni == "davies_based_risk" && clust == "NkT.2.1") {
+                    # #     browser()
+                    # # }
+                    # contfitv2 <- contrasts.fit(
+                    #     fit = fit_uni,
+                    #     contrasts = avg_effect_cont
+                    # )
+
+                    # contfitv2 <- eBayes(contfitv2, robust = T)
+                    # model_uni[["ebayes"]][[clust]][[uni]] <- contfitv2
+
+                    # # ssr <- sst - contfitv2$df.residual * contfitv2$sigma^2
+                    # # r_sqrd <- ssr / sst
+
+                    # fit_ttabv2 <- topTable(
+                    #     fit = contfitv2,
+                    #     n = Inf, sort.by = "none"
+                    # )
+
+                    # # Only to be used in specific scenarios. Significance of coefficients not impacted by the presence of an intercept.
+                    # r_sqrd <- summary(fit_for_rsqrd)$r.squared
+                    # adj_r_sqrd <- summary(fit_for_rsqrd)$adj.r.squared
+
+                    # r_sqrd_intercept <- summary(fit_for_rsqrd_intercept)$r.squared
+                    # adj_r_sqrd_intercept <- summary(fit_for_rsqrd_intercept)$adj.r.squared
+
+
+                    # tt_uni <- fit_ttabv2 # topTable(fit_uni, coef = cov)
+                    # d_uni <- c(
+                    #     clust,
+                    #     uni,
+                    #     paste0(uni, variable_info_structure[[uni]][["factorLevels"]][[2]]),
+                    #     tt_uni[["logFC"]],
+                    #     tt_uni[["P.Value"]],
+                    #     tt_uni[["t"]],
+                    #     r_sqrd,
+                    #     adj_r_sqrd,
+                    #     r_sqrd_intercept,
+                    #     adj_r_sqrd_intercept,
+                    #     contfitv2$F,
+                    #     contfitv2$F.p.value
+                    # )
+                    # df_uni <- rbind(df_uni, d_uni)
+                } else {
+                    if (transform == "asin") {
+                        fit_uni <- lmFit(tmp_uni$arcsin_prop, design_uni)
+                        fit_for_rsqrd <- lm(as.formula(paste0("arcsin_prop ~", fs)), tmp_uni)
+                        fit_for_rsqrd_intercept <- lm(as.formula(paste0("arcsin_prop ~  0 +", fs)), tmp_uni)
+                    } else if (transform == "logit") {
+                        # USing lm to compute Rsqrd values for linear models. This is reported in the context of fitting continuous covariates. Effect sizes and p-values otherwise estimated via limma::lmFit
+                        fit_uni <- lmFit(tmp_uni$logit_prop, design_uni)
+                        fit_for_rsqrd <- lm(as.formula(paste0("logit_prop ~", fs)), tmp_uni)
+                        fit_for_rsqrd_intercept <- lm(as.formula(paste0("logit_prop ~  0 +", fs)), tmp_uni)
+                    } else if (transform == "identity") {
+                        fit_uni <- lmFit(tmp_uni$prop, design_uni)
+                        fit_for_rsqrd <- lm(as.formula(paste0("prop ~", fs)), tmp_uni)
+                        fit_for_rsqrd_intercept <- lm(as.formula(paste0("prop ~  0 +", fs)), tmp_uni)
+                    }
+                    model_uni[["lmfit"]][[clust]][[uni]] <- fit_uni
+
+                    # browser()
+
+                    # Compute all contrasts between factor levels
+                    if (uni_do_contrasts) {
+                        if (is.factor(tmp_uni[[uni]])) {
+                            all_levels <- levels(droplevels(tmp_uni[[uni]]))
+                        } else {
+                            all_levels <- unique(tmp_uni[[uni]])
+                        }
+
+                        colnames(design_uni) <- make.names(colnames(design_uni))
+
+
+                        contrasts_lists <- c()
+                        variable_pairs <- list()
+                        for (i in 1:(length(all_levels) - 1)) {
+                            for (j in (i + 1):length(all_levels)) {
+                                groupA <- sprintf("%s%s", uni, all_levels[[j]]) |> make.names()
+                                groupB <- sprintf("%s%s", uni, all_levels[[i]]) |> make.names()
+
+                                contrast_str <- sprintf("%s-%s", groupA, groupB)
+
+                                contrasts_lists <- c(contrasts_lists, contrast_str)
+                                variable_pairs[[contrast_str]] <- c(all_levels[[j]], all_levels[[i]])
+                            }
+                        }
+                        contrast_fit <- limma::makeContrasts(contrasts = contrasts_lists, levels = design_uni) # NP is positive, RP is negative
+                        lmFit_cont <- limma::contrasts.fit(fit_uni, contrast_fit)
+                        # robust standard errors
+                        tt_contrast <- limma::eBayes(lmFit_cont, robust = TRUE)
+                        model_uni[["ebayes"]][[clust]][[uni]] <- tt_contrast
+
+                        # Only to be used in specific scenarios. Significance of coefficients not impacted by the presence of an intercept.
+                        r_sqrd <- summary(fit_for_rsqrd)$r.squared
+                        adj_r_sqrd <- summary(fit_for_rsqrd)$adj.r.squared
+
+                        r_sqrd_intercept <- summary(fit_for_rsqrd_intercept)$r.squared
+                        adj_r_sqrd_intercept <- summary(fit_for_rsqrd_intercept)$adj.r.squared
+
+
+                        # Output table formatting
+                        for (fitted_contrast in contrasts_lists) {
+                            tt_uni <- topTable(tt_contrast, coef = fitted_contrast)
+                            contrast_variables <- variable_pairs[[fitted_contrast]]
+                            simp_contrast <- sprintf("%s: %s - %s", uni, contrast_variables[[1]], contrast_variables[[2]])
+                            d_uni <- c(
+                                clust,
+                                uni,
+                                simp_contrast,
+                                tt_uni[["logFC"]],
+                                tt_uni[["P.Value"]],
+                                tt_uni[["t"]],
+                                r_sqrd,
+                                adj_r_sqrd,
+                                r_sqrd_intercept,
+                                adj_r_sqrd_intercept,
+                                tt_contrast$F,
+                                tt_contrast$F.p.value,
+                                contrast_variables[[1]],
+                                contrast_variables[[2]]
+                            )
+                            df_uni <- rbind(df_uni, d_uni)
+                        }
+                    } else {
+                        # For continous covariates
+                        fit_uni <- eBayes(fit_uni, robust = T)
+
+                        model_uni[["ebayes"]][[clust]][[uni]] <- fit_uni
+                        # Only to be used in specific scenarios. Significance of coefficients not impacted by the presence of an intercept.
+                        r_sqrd <- summary(fit_for_rsqrd)$r.squared
+                        adj_r_sqrd <- summary(fit_for_rsqrd)$adj.r.squared
+
+                        r_sqrd_intercept <- summary(fit_for_rsqrd_intercept)$r.squared
+                        adj_r_sqrd_intercept <- summary(fit_for_rsqrd_intercept)$adj.r.squared
+
+                        # browser()
+
+                        for (cov_idx in seq_along(coef_list_uni[[uni]])) {
+                            cov <- coef_list_uni[[uni]][[cov_idx]]
+                            groupA <- input_var_uni[[uni]][[cov_idx]]
+                            groupB <- base_var_uni[[uni]]
+
+
+
+                            tt_uni <- topTable(fit_uni, coef = cov)
+                            d_uni <- c(
+                                clust,
+                                uni,
+                                cov,
+                                tt_uni[["logFC"]],
+                                tt_uni[["P.Value"]],
+                                tt_uni[["t"]],
+                                r_sqrd,
+                                adj_r_sqrd,
+                                r_sqrd_intercept,
+                                adj_r_sqrd_intercept,
+                                fit_uni$F,
+                                fit_uni$F.p.value,
+                                groupA,
+                                groupB
+                            )
+                            df_uni <- rbind(df_uni, d_uni)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    colnames(df) <- c("cluster", "variable", "factor", "coef", "p.val", "t")
+    if (restructured[["FLAG_PERFORM_MULTIVARIATE"]]) {
+        df <- df |> dplyr::mutate(direction = dplyr::case_when(
+            p.val > 0.05 & coef > 0 ~ "+",
+            p.val <= 0.05 & coef > 0 ~ "SIG (+)",
+            p.val > 0.05 & coef < 0 ~ "-",
+            p.val <= 0.05 & coef < 0 ~ "SIG (-)"
+        ))
+    }
+
+    colnames(df_uni) <- c("cluster", "variable", "factor", "coef", "p.val", "t", "r_sqrd", "adj_r_sqrd", "r_sqrd_NO_INTERCEPT", "adj_r_sqrd_NO_INTERCEPT", "F", "F_pvalue", "groupA", "groupB")
+
+    df_uni <- df_uni |> dplyr::mutate(direction = dplyr::case_when(
+        p.val > 0.05 & coef > 0 ~ "+",
+        p.val <= 0.05 & coef > 0 ~ "SIG (+)",
+        p.val > 0.05 & coef < 0 ~ "-",
+        p.val <= 0.05 & coef < 0 ~ "SIG (-)"
+    ))
+
+    return(list(
+        "df_p_val" = df,
+        "df_p_val_uni" = df_uni,
+        "counts_with_props" = counts_facetted,
+        "counts_uni" = counts_univariates,
+        "model_mutli" = model_multi,
+        "model_uni" = model_uni,
+        "FLAG_PERFORM_MULTIVARIATE" = restructured[["FLAG_PERFORM_MULTIVARIATE"]]
+    ))
+}
+
+# This is a simple wrapper function to call the linear model code.
+quickLinearAsinAndPlots <- function(counts, variable_info_structure, transform = "asin", USE_ALT_BATCH_CORRECTION_STRATEGY = FALSE) {
+    wilcox_out_list <- clusterLinearArcsinTest(counts, variable_info_structure = variable_info_structure, transform = transform, USE_ALT_BATCH_CORRECTION_STRATEGY = USE_ALT_BATCH_CORRECTION_STRATEGY)
+    wilcox_out <- wilcox_out_list[["df_p_val"]]
+    wilcox_out_uni <- wilcox_out_list[["df_p_val_uni"]]
+
+    counts_with_props <- wilcox_out_list[["counts_with_props"]]
+    counts_uni <- wilcox_out_list[["counts_uni"]]
+    FLAG_PERFORM_MULTIVARIATE <- wilcox_out_list[["FLAG_PERFORM_MULTIVARIATE"]]
+
+    # plotWilcoxOut <- plotWilcoxonResults(wilcox_out)
+    # plotClusterOut <- plotClusters(counts, grouping_var = grouping_var, groupA = groupA, groupB = groupB)
+    return(list("wilcox_out" = wilcox_out, "wilcox_out_uni" = wilcox_out_uni, "counts_with_props" = counts_with_props, "counts_uni" = counts_uni, "FLAG_PERFORM_MULTIVARIATE" = FLAG_PERFORM_MULTIVARIATE)) # , "plotWilcoxOut" = plotWilcoxOut, "plotClusterOut" = plotClusterOut, "counts_with_props" = counts_with_prop))
+}
+
+
+
+
+# (Not used) Computes the wilcoxon rank sum test of all clusters between two groups. Returns a log2FC and a ranked-biserial correlation coefficient
 clusterWilcoxonTest <- function(counts, clusters_filter = NULL, fitted_variable = "progression_group", groupA = "NP", groupB = "RP") {
     # Variable mode - tbd
 
@@ -270,13 +768,13 @@ clusterBetaregTest <- function(counts, clusters_filter = NULL, fitted_variable =
     return(list("df_p_val" = df_p_val, "counts_with_props" = counts))
 }
 
-# Simplifies the output of the wilcoxon model code for output to a .csv
+# (Not Used) Simplifies the output of the wilcoxon model code for output to a .csv
 simplify_output_wilcoxon <- function(results) {
     return(results |> dplyr::select(cluster, fold_change, p, direction))
 }
 
 
-# Plotting a scatterplot of wilcoxon p value and effect size
+# (Not Used) Plotting a scatterplot of wilcoxon p value and effect size
 plotWilcoxonResults <- function(df_p_val) {
     # df_p_val <- df_p_val |> dplyr::mutate(fold_change = dplyr::case_when(
     #     fold_change > 2^2.5 ~ 2^2.5,
@@ -296,7 +794,7 @@ plotWilcoxonResults <- function(df_p_val) {
     return(p)
 }
 
-# Plots a box plot for a cluster
+# (Not Used) Plots a box plot for a cluster
 
 plotClusters <- function(counts, grouping_var = NULL, groupA = NULL, groupB = NULL, groups = NULL, scale_cluster_plots = TRUE, ylabel = "Average Cluster Proportion", xlabel = "") {
     if (!is.null(grouping_var)) {
@@ -368,7 +866,7 @@ plotClusters <- function(counts, grouping_var = NULL, groupA = NULL, groupB = NU
     return(list("Plots" = p_lists, "Outputs" = output_lists))
 }
 
-# output_lists[[clustID]] <- pdf_and_png(p, output_subdir, paste0(nameMod, "_", clustID), pdfWidth = 6, pdfHeight = 3.5)
+# (Not Used) output_lists[[clustID]] <- pdf_and_png(p, output_subdir, paste0(nameMod, "_", clustID), pdfWidth = 6, pdfHeight = 3.5)
 # Perform all wilcoxon tests and generate plots
 
 quickWilcoxAndPlots <- function(counts, grouping_var, groupA, groupB) {
@@ -381,7 +879,7 @@ quickWilcoxAndPlots <- function(counts, grouping_var, groupA, groupB) {
     return(list("wilcox_out" = wilcox_out, "plotWilcoxOut" = plotWilcoxOut, "plotClusterOut" = plotClusterOut, "counts_with_props" = counts_with_prop))
 }
 
-# Perform all beta regression tests and generate plots
+# (Not Used) Perform all beta regression tests and generate plots
 
 quickBetaAndPlots <- function(counts, grouping_var, groupA, groupB, precision_model = "1", contrast_codes = NULL, factor_levels = NULL) {
     wilcox_out_list <- clusterBetaregTest(counts, fitted_variable = grouping_var, groupA = groupA, groupB = groupB, precision_model = precision_model, contrast_codes = contrast_codes, factor_levels = factor_levels)
@@ -473,7 +971,7 @@ mean.quant <- function(x, probs) {
     return(d)
 }
 
-# Giving a fit Dirichlet model corrected for a set of batch covariates, construct an estimated 95% CI of the fitted Dirichlet mean by sampling from the mean and covariance of the various parameters.
+# (Not Used) Giving a fit Dirichlet model corrected for a set of batch covariates, construct an estimated 95% CI of the fitted Dirichlet mean by sampling from the mean and covariance of the various parameters.
 # Can be used even in cases where a given covariate shows large differences in precision.
 # (p values - not use. Fold Changes used for Figure 5A)
 dirichlet_pvalue_simulation <- function(
@@ -947,7 +1445,7 @@ dirichlet_pvalue_simulation <- function(
     # quant_nkt3 <- data.frame(reformated_counts, t(nkt3))
 }
 
-# Fits a dirichlet regression model for various conditions.
+# (Not Used) Fits a dirichlet regression model for various conditions.
 # Optionally - derive additional metrics by estimating the distribution of the fitted cluster proportions conditioned on uniform sampling of the batch covariate.
 # Only used for Figure 5a
 cluster_dirichlet_test <- function(counts, clusters_filter = NULL, variable_mode = "PFS", BC_mode = "None", DO_SIMULATION_STEP = F, SIMULATION_OVERRIDE_RETURN_MEAN_ONLY = T) {
@@ -1185,4 +1683,93 @@ cluster_dirichlet_test <- function(counts, clusters_filter = NULL, variable_mode
     )
 
     return(out_list)
+}
+
+# Wrapper function. Settings for paper: method="LINEAR", transform="logit", USE_ALT_BATCH_CORRECTION_STRATEGY=FALSE
+DiffAbun_Wrapper <- function(counts, variable_info_structure, DOMULTIVAR = TRUE, method = "LINEAR", transform = "asin", USE_ALT_BATCH_CORRECTION_STRATEGY = FALSE) {
+    if (method != "LINEAR" & DOMULTIVAR) {
+        DOMULTIVAR <- FALSE
+        warning("Generalize implementations for multivar models not implemented for methods other than linear")
+    }
+
+    # Contain extra info output from the model
+    extra_info <- list()
+    model_uni <- NULL
+    model_multi <- NULL
+    if (method == "LINEAR") {
+        wilcox_out_list <- clusterLinearArcsinTest(counts, variable_info_structure = variable_info_structure, transform = transform, USE_ALT_BATCH_CORRECTION_STRATEGY = USE_ALT_BATCH_CORRECTION_STRATEGY)
+        wilcox_out <- wilcox_out_list[["df_p_val"]]
+        wilcox_out_uni <- wilcox_out_list[["df_p_val_uni"]]
+
+        counts_with_props <- wilcox_out_list[["counts_with_props"]]
+        counts_uni <- wilcox_out_list[["counts_uni"]]
+        model_uni <- wilcox_out_list[["model_uni"]]
+        model_mutli <- wilcox_out_list[["model_mutli"]]
+
+        FLAG_PERFORM_MULTIVARIATE <- wilcox_out_list[["FLAG_PERFORM_MULTIVARIATE"]]
+    } else if (method == "DIRICHLET") {
+        cluster_size <- counts |>
+            dplyr::group_by(cluster) |>
+            dplyr::summarise(cluster_size = sum(Counts))
+
+        empty_clusters <- cluster_size |> dplyr::filter(cluster_size == 0)
+
+        counts_with_size <- dplyr::left_join(counts, cluster_size)
+
+        # remove empty clusters
+        counts_with_size <- counts_with_size |>
+            dplyr::filter(cluster_size != 0) |>
+            droplevels()
+
+        counts_with_size <- prepare_counts_object(counts_with_size, variable_info_structure)
+        diri_outs <- list()
+        for (uni in names(variable_info_structure)) {
+            if (variable_info_structure[[uni]]$perform_univariate) {
+                groupA <- variable_info_structure[[uni]]$factorLevels[[1]]
+                groupB <- variable_info_structure[[uni]]$factorLevels[[2]]
+
+                diri_outs[[uni]] <- cluster_dirichlet_generic(counts_with_size$counts_uni[[uni]], uni, groupA = groupA, groupB = groupB, BC_var = variable_info_structure[[uni]]$univariate_batch, DO_SIMULATION_STEP = T, SIMULATION_OVERRIDE_RETURN_MEAN_ONLY = F)
+            }
+        }
+        wilcox_out <- NULL
+        wilcox_out_uni <- NULL
+        counts_uni <- list()
+        counts_with_props <- list()
+        for (uni in names(diri_outs)) {
+            counts_uni[[uni]] <- diri_outs[[uni]][["counts_uni"]]
+            counts_with_props[[uni]] <- diri_outs[[uni]][["counts_with_props"]]
+            extra_info[[uni]] <- diri_outs[[uni]][["extra"]]
+            if (is.null(wilcox_out)) {
+                wilcox_out <- diri_outs[[uni]][["dirichlet_out"]]
+            } else {
+                wilcox_out <- rbind(wilcox_out, diri_outs[[uni]][["dirichlet_out"]])
+            }
+            if (is.null(wilcox_out_uni)) {
+                wilcox_out_uni <- diri_outs[[uni]][["dirichlet_sim_out"]]
+            } else {
+                wilcox_out_uni <- rbind(wilcox_out_uni, diri_outs[[uni]][["dirichlet_sim_out"]])
+            }
+        }
+
+        counts_with_props <- NULL
+        FLAG_PERFORM_MULTIVARIATE <- F
+    } else if (method == "COX") {
+        wilcox_out_list <- clusterCoxPH(counts,
+            variable_info_structure = variable_info_structure,
+            transform = "logit",
+            USE_ALT_BATCH_CORRECTION_STRATEGY = FALSE,
+            logit_adjust_factor = 0.005
+        )
+        wilcox_out <- NULL
+        wilcox_out_uni <- wilcox_out_list[["df_p_val_uni"]]
+        counts_with_props <- wilcox_out_list[["counts_with_props"]]
+        counts_uni <- wilcox_out_list[["counts_uni"]]
+        model_uni <- NULL
+        model_multi <- NULL
+        FLAG_PERFORM_MULTIVARIATE <- FALSE
+    }
+
+    # plotWilcoxOut <- plotWilcoxonResults(wilcox_out)
+    # plotClusterOut <- plotClusters(counts, grouping_var = grouping_var, groupA = groupA, groupB = groupB)
+    return(list("wilcox_out" = wilcox_out, "wilcox_out_uni" = wilcox_out_uni, "counts_with_props" = counts_with_props, "counts_uni" = counts_uni, "model_uni" = model_uni, "model_multi" = model_multi, "extra_info" = extra_info, "FLAG_PERFORM_MULTIVARIATE" = FLAG_PERFORM_MULTIVARIATE)) # , "plotWilcoxOut" = plotWilcoxOut, "plotClusterOut" = plotClusterOut, "counts_with_props" = counts_with_prop))
 }

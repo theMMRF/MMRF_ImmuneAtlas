@@ -25,6 +25,9 @@ editor_options:
 
 Renders Figures 5c (Cellchat heatmap) and 5d (circos plot for IFNG signaling)
 
+Revisions: Illustrator figure modified to specify 'Plasma cells'
+
+
 # Libraries
 ```{r warning=FALSE, include=FALSE}
 organism <- "org.Hs.eg.db"

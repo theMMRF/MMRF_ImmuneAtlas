@@ -1,0 +1,164 @@
+---
+title: "Figure 3G - Correlating IFN-1 Signatures"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Loading Data and Setting Up Options
+```{r init}
+source("source/Validation/validation_load_data.R", local = T)
+merged <- merged |> subset(cohort == "discovery")
+
+output_corr <- file.path(output, "Indiv_Risk_Signatures", "custom_100524")
+dir.create(output_corr, recursive = T, showWarnings = F)
+```
+
+# Setup counts object
+```{r}
+baseline <- merged |> subset(VJ_INTERVAL == "Baseline" & lineage_group != "LQ")
+rm(merged)
+gc()
+```
+
+# Load Signature result from the bulk data
+```{r}
+bulkIFN <- readRDS(file.path("output", "BulkRNA_misc_GSVA", "GSVA_IFN.rds"))
+
+bulkIFN_subset <- bulkIFN |> dplyr::select(IFN_Score, public_id)
+```
+
+# Subset to baseline plasma cells
+```{r}
+# bl_noplasma <- baseline |> subset(subset = (lineage_group %ni% c("P", "LQ")))
+bl_plasma <- baseline |> subset(subset = (lineage_group %in% c("P")))
+```
+
+```{r}
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, Study_Site)
+test <- test |> dplyr::left_join(md_bl, by = "public_id")
+```
+
+# Aggregate counts for plasma cells
+
+```{r}
+tmp_bl_md <- md_bl
+tmp_bl_md$public_id <- gsub("_", "-", tmp_bl_md$public_id)
+
+cell_counts <- table(bl_plasma$public_id) |> as.data.frame()
+colnames(cell_counts) <- c("public_id", "count")
+cell_counts$public_id <- gsub("_", "-", cell_counts$public_id)
+
+# Seurat V5
+# pseudo_tc_plasma <- AggregateExpression(bl_plasma, assays = "RNA", return.seurat = T, group.by = c("public_id"))
+
+# Seurat V4
+pseudo_tc_plasma <- Seurat::PseudobulkExpression(bl_plasma, assays = "RNA", return.seurat = T, group.by = c("public_id"), method = "aggregate")
+
+
+pseudo_tc_plasma@meta.data$sample_name <- rownames(pseudo_tc_plasma@meta.data)
+pseudo_tc_plasma@meta.data <- dplyr::left_join(pseudo_tc_plasma@meta.data, tmp_bl_md, by = "public_id")
+pseudo_tc_plasma@meta.data <- dplyr::left_join(pseudo_tc_plasma@meta.data, cell_counts, by = "public_id")
+rownames(pseudo_tc_plasma@meta.data) <- pseudo_tc_plasma@meta.data$sample_name
+```
+
+# Compute Signatures defined in Supplemental Table 4 + filter to those with 50+ plasma cells
+
+
+```{r}
+high_pc_count <- pseudo_tc_plasma |> subset(subset = (count >= 50))
+
+counts <- GetAssayData(high_pc_count, "RNA", "counts")
+
+d0 <- DGEList(counts)
+d0 <- calcNormFactors(d0)
+
+cutoff <- 1
+drop <- which(apply(cpm(d0), 1, max) < cutoff)
+d <- d0[-drop, ]
+dim(d) # number of genes left
+
+immune_gs <- list("IFNA" = c(
+    "IFI44L",
+    "ISG15",
+    "XAF1",
+    "IFI6",
+    "MX1",
+    "LY6E",
+    "EIF2AK2",
+    "STAT1",
+    "MX2",
+    "IFIT3",
+    "ISG20",
+    "OAS1",
+    "IFI44",
+    "IRF7",
+    "IFIT1",
+    "OAS3",
+    "IFI35",
+    "OAS2",
+    "IFI27"
+))
+
+cpm_y <- cpm(d, log = TRUE)
+
+# Run GSVA
+library(GSVA)
+
+
+gbmPar <- gsvaParam(as.matrix(cpm_y),
+    immune_gs,
+    kcdf = "Gaussian" # "Gaussian" for logCPM,logRPKM,logTPM, "Poisson" for counts
+)
+en_plasma <- gsva(gbmPar)
+```
+
+```{r}
+df_plasma <- data.frame(public_id = colnames(en_plasma), IFNA_GSVA_Plasma = en_plasma["IFNA", ])
+df_plasma$public_id <- gsub("-", "_", df_plasma$public_id)
+
+test <- dplyr::left_join(df_plasma, bulkIFN_subset, by = "public_id")
+
+test <- test |> na.omit()
+
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, Study_Site)
+test <- test |> dplyr::left_join(md_bl, by = "public_id")
+```
+
+# Plotting/formatting
+```{r}
+test_fixed <- test
+test_fixed$IFN_Score <- as.numeric(test_fixed$IFN_Score)
+test_fixed$IFNA_GSVA_Plasma <- as.numeric(test_fixed$IFNA_GSVA_Plasma)
+results <- lm(IFN_Score ~ IFNA_GSVA_Plasma + Study_Site, test_fixed) |> summary()
+p_val <- results$coef["IFNA_GSVA_Plasma", "Pr(>|t|)"]
+p_val_clean <- pixiedust::pval_string(p_val, format = c("scientific"), digits = 3)
+# 1.627926e-32
+
+adj_r_squared <- results$adj.r.squared |> round(digits = 2)
+
+p <- ggplot(test_fixed, aes(x = IFNA_GSVA_Plasma, y = IFN_Score)) +
+    geom_point(aes(color = Study_Site), alpha = 0.25, size = 2) +
+    geom_smooth(method = "lm", formula = "y~x", color = "black") +
+    # geom_smooth(method = "lm", formula = "y~x", aes(color = Study_Site, group = Study_Site, fill = Study_Site), alpha = 0.2, linetype = "dashed", se = F) +
+    annotate("text", x = -0.85, y = 0.7, label = sprintf("R\U00B2: %s\nP.Val:%s", adj_r_squared, p_val_clean), hjust = 0) +
+    theme_prism() +
+    ylab("Bulk Plasma Cells") +
+    xlab("Pseudobulk Plasma Cells (scRNA-seq)") +
+    ggtitle("IFN-1 Signature Score") +
+    coord_fixed()
+
+
+pdf_and_png(p, output_corr, "ggplot_correlation_scrna_pc_to_bulk", pdfWidth = W_FULL * 1.5, pdfHeight = H_FULL * 1.5, scale = 2)
+```

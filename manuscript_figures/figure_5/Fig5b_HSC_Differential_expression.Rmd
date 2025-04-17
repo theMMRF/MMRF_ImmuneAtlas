@@ -8,6 +8,9 @@ output:
         toc_float: true
 ---
 
+Revisions: Corrected color scales
+
+
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(
     collapse = TRUE,

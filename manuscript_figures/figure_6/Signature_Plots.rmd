@@ -1,0 +1,2776 @@
+---
+title: "Figure 3 - Signatures by Risk"
+author: "William Pilcher"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+    collapse = TRUE,
+    comment = "#>"
+)
+```
+
+# Loading Data and Setting Up Options
+```{r init}
+source("source/Validation/validation_load_data.R", local = T)
+merged <- merged |> subset(cohort == "validation")
+
+output_corr <- file.path(output, "Validation", "Cluster_Signatures_REVISED_A")
+dir.create(output_corr, recursive = T, showWarnings = F)
+```
+
+# Setup counts object
+```{r}
+baseline <- merged |> subset(VJ_INTERVAL == "Baseline" & lineage_group != "LQ")
+rm(merged)
+gc()
+```
+
+# Compute Signatures defined in Supplemental Table 4
+
+```{r}
+library(UCell)
+
+signature_list <- c(list(
+    "Dysfunctional" = c("B3GAT1+", "ZEB2+", "KLRG1+", "KLRK1+", "TIGIT+", "PDCD1+", "LAG3+", "CTLA4+", "HAVCR2+", "TOX+", "CD160+", "CD27-", "CD28-"),
+    "IFN" = c("IFI6", "IFI30", "IFITM3", "IFI44L", "IFITM2", "S100A4", "IFI16", "ISG15", "STAT1", "IFI44", "STAT2", "APOL6", "IFIT3", "IFI35", "IFIT2", "JAK2", "IFI27L2", "GBP1", "GBP2", "IFIT1", "IFIH1", "IFITM1", "GBP4", "IFI27", "ISG15", "MX1", "OAS1", "XAF1", "APOL3", "IFIT5", "IFNG"),
+    "HLA" = c("HLA-DRA", "CD74", "HLA-DRB1", "CD52", "HLA-DPB1", "HLA-DPA1", "HLA-DRB5", "HLA-DQB1", "HLA-DMA", "HLA-DQA1", "HLA-DOA"),
+    "SASP" = c("ACVR1B", "ANG", "ANGPT1", "ANGPTL4", "AREG", "AXL", "BEX3", "BMP2", "BMP6", "C3", "CCL1", "CCL13", "CCL16", "CCL2", "CCL20", "CCL24", "CCL26", "CCL3", "CCL3L1", "CCL4", "CCL5", "CCL7", "CCL8", "CD55", "CD9", "CSF1", "CSF2", "CSF2RB", "CST4", "CTNNB1", "CTSB", "CXCL1", "CXCL10", "CXCL12", "CXCL16", "CXCL2", "CXCL3", "CXCL8", "CXCR2", "DKK1", "EDN1", "EGF", "EGFR", "EREG", "ESM1", "ETS2", "FAS", "FGF1", "FGF2", "FGF7", "GDF15", "GEM", "GMFG", "HGF", "HMGB1", "ICAM1", "ICAM3", "IGF1", "IGFBP1", "IGFBP2", "IGFBP3", "IGFBP4", "IGFBP5", "IGFBP6", "IGFBP7", "IL10", "IL13", "IL15", "IL18", "IL1A", "IL1B", "IL2", "IL32", "IL6", "IL6ST", "IL7", "INHA", "IQGAP2", "ITGA2", "ITPKA", "JUN", "KITLG", "LCP1", "MIF", "MMP1", "MMP10", "MMP12", "MMP13", "MMP14", "MMP2", "MMP3", "MMP9", "NAP1L4", "NRG1", "PAPPA", "PECAM1", "PGF", "PIGF", "PLAT", "PLAU", "PLAUR", "PTBP1", "PTGER2", "PTGES", "RPS6KA5", "SCAMP4", "SELPLG", "SEMA3F", "SERPINB4", "SERPINE1", "SERPINE2", "SPP1", "SPX", "TIMP2", "TNF", "TNFRSF10C", "TNFRSF11B", "TNFRSF1A", "TNFRSF1B", "TUBGCP2", "VEGFA", "VEGFC", "VGF", "WNT16", "WNT2"),
+    "Naive" = c("IL7R", "CCR7", "SELL", "FOXO1", "KLF2", "KLF3", "LEF1", "TCF7", "ACTN1", "FOXP1", "BTG1", "BTG2", "TOB1", "FOXO1"),
+    "Cytotoxic" = c("GZMA", "GZMB", "GZMH", "GZMK", "GZMH", "GNLY", "PRF1", "IFNG", "TNF", "SERPINB1", "SERPINB6", "SERPINB9", "CTSA", "CTSB", "CTSC", "CTSD", "CTSW", "CST3", "CST7", "CSTB", "LAMP1", "LAMP3", "CAPN2", "GZMM", "CTSH", "CAPN2", "PLEK"),
+    "Exhausted" = c("PDCD1", "LAYN", "HAVCR2", "LAG3", "CD244", "CTLA4", "LILRB1", "TIGIT", "TOX", "VSIR", "BTLA", "ENTPD1", "CD160", "LAIR1"),
+    "IFNA" = c(
+        "IFI44L",
+        "ISG15",
+        "XAF1",
+        "IFI6",
+        "MX1",
+        "LY6E",
+        "EIF2AK2",
+        "STAT1",
+        "MX2",
+        "IFIT3",
+        "ISG20",
+        "OAS1",
+        "IFI44",
+        "IRF7",
+        "IFIT1",
+        "OAS3",
+        "IFI35",
+        "OAS2",
+        "IFI27"
+    )
+))
+```
+
+```{r}
+# tmp <- baseline |> subset(subcluster_V03072023 == "NkT.0")
+baseline <- AddModuleScore_UCell(baseline, features = signature_list, name = "")
+```
+
+```{r}
+types_list <- list(
+    "CD3+ Cells" = c("CD8", "CD4"),
+    "Myeloid Cells" = "M",
+    "B Cells" = "B",
+    "CD8+" = "CD8",
+    "CD4+" = "CD4",
+    "Nk" = "Nk",
+    "Immune" = c("CD8", "CD4", "M", "B", "Other", "Nk"),
+    "All_NoPlasma" = c("CD8", "CD4", "M", "B", "Other", "Nk", "E"),
+    "All" = c("CD8", "CD4", "M", "B", "Other", "Nk", "P", "E")
+)
+idx_name <- "Immune"
+
+averageMod <- baseline@meta.data %>%
+    dplyr::group_by(subcluster_V03072023) %>%
+    dplyr::summarise(
+        "NaiveT" = mean(Naive),
+        "CytotoxicT" = mean(Cytotoxic),
+        "ExhaustedT" = mean(Exhausted),
+        "DysfunctionalT" = mean(Dysfunctional),
+        "SASP" = mean(SASP),
+        "IFN1" = mean(IFNA),
+        "HLA" = mean(HLA)
+    ) |>
+    gather(Module, Score, -subcluster_V03072023) |>
+    as.data.frame()
+
+diff_expr <- averageMod
+
+cluster_info <- dplyr::distinct(baseline@meta.data, subcluster_V03072023, cellID_short, lineage_group, lineage_order)
+diff_expr <- dplyr::left_join(diff_expr, cluster_info)
+diff_expr <- diff_expr |> arrange(subcluster_V03072023)
+diff_expr$cellID_short <- factor(diff_expr$cellID_short, levels = unique(diff_expr$cellID_short))
+diff_expr <- diff_expr |> dplyr::filter(lineage_group != "E", lineage_group != "P", lineage_group != "LQ")
+
+
+diff_expr_test <- diff_expr |>
+    group_by(Module) |>
+    dplyr::mutate(mean_module = mean(Score), var_module = var(Score), z = (Score - mean_module) / sd(Score), min_max = 2 * ((Score - min(Score)) / max(Score - min(Score)) - 0.5))
+
+diff_expr_test$Module <- factor(diff_expr_test$Module, levels = rev(c(
+    "NaiveT",
+    "CytotoxicT",
+    "ExhaustedT",
+    "DysfunctionalT",
+    "SASP",
+    "IFN1",
+    "HLA"
+)))
+cellID_short_ordering <- readRDS("data/cellID_short_figure_ordering.RDS")
+
+diff_expr_test$cellID_short <- factor(diff_expr_test$cellID_short, levels = cellID_short_ordering)
+
+diff_expr_test$lineage_group <- factor(diff_expr_test$lineage_group, levels = c("CD8", "CD4", "M", "B", "Other", "Nk"))
+
+expr_plot_list <- list()
+for (i in types_list[[idx_name]]) {
+    tmp_expr <- diff_expr_test |> dplyr::filter(lineage_group == i)
+    expr_plot_list[[i]] <- ggplot(tmp_expr) +
+        geom_tile(aes(x = cellID_short, y = Module, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+        scale_fill_gradient2(
+            low = "#1d9ae3",
+            high = "#f63575",
+            limits = range(c(-3, 3)),
+            oob = squish
+        ) +
+        theme_prism() +
+        coord_fixed(ratio = 1) +
+        xlab("") +
+        ylab("") +
+        theme(
+            axis.text.x = element_text(
+                size = 14 * 0.95,
+                family = "sans", face = "bold",
+                margin = margin(t = 0.8 * 14 / 4),
+                angle = 90,
+                vjust = 0.5,
+                hjust = 1,
+            ),
+            plot.margin = margin(
+                14 / 2, 14 / 2,
+                0, 14 / 2
+            ),
+            legend.position = "top"
+        ) +
+        # element_text(
+        #     angle = 90,
+        #     vjust = 0.5, hjust = 1,
+        # )) +
+        guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")), legend.position = "top")
+    if (i != types_list[[idx_name]][[1]]) {
+        expr_plot_list[[i]] <- expr_plot_list[[i]] + theme(
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank(),
+            axis.title.y = element_blank(),
+            axis.line.y = element_blank(),
+            axis.ticks.length.y = unit(0, "lines")
+        )
+    }
+}
+
+plot_expr <- patchwork::wrap_plots(c(expr_plot_list), nrow = 1, ncol = length(types_list[[idx_name]]), byrow = T, guides = "collect", axes = "collect", axes_titles = "collect")
+
+pdf_and_png(plot_expr, output_corr, paste0("TEST_Lower_Panel_Sig_Score_No_Abundance"), pdfWidth = 8, pdfHeight = 2.4, scale = 2.5)
+```
+
+```{r}
+cellID_short_ordering <- readRDS("data/cellID_short_figure_ordering.RDS")
+
+
+
+top_plot_info <- read.csv("/opt/megaseq-data/wcpilch/MMRF-ImmuneAtlas-Analysis-Sync/output/PAPER_FIGURES/Validation/Individual_Risk/Diff_Abundance/LINEAR_LOGIT/Validation_Only_No_Interaction/linear_reg_UNIimmune_only.csv", header = T, row.names = 1) |>
+    dplyr::filter(variable %in% c("progression_group"))
+top_plot_list <- list()
+
+cluster_md <- baseline@meta.data |> dplyr::distinct(subcluster_V03072023, isDoublet, subcluster_V03072023_compartment, lineage_group, lineage_order, cellID_short, cellID_long)
+cluster_md$cluster <- cluster_md$subcluster_V03072023
+top_plot_info <- dplyr::left_join(top_plot_info, cluster_md, by = "cluster")
+
+variable_rename <- data.frame(variable = c("progression_group", "davies_based_risk"), variable_name = c("RP vs NP", "HR vs SR"))
+
+top_plot_info <- dplyr::left_join(top_plot_info, variable_rename, by = "variable")
+top_plot_info$variable_name <- factor(top_plot_info$variable_name, levels = rev(c("RP vs NP")))
+
+
+top_plot_info <- top_plot_info |> dplyr::mutate(binned_pval = dplyr::case_when(
+    p.val < 0.001 & coef > 0 ~ "Enriched (<0.001)",
+    p.val < 0.01 & coef > 0 ~ "Enriched (<0.01)",
+    p.val < 0.05 & coef > 0 ~ "Enriched (0.05)",
+    p.val < 0.001 & coef < 0 ~ "Depleted (<0.001)",
+    p.val < 0.01 & coef < 0 ~ "Depleted (<0.01)",
+    p.val < 0.05 & coef < 0 ~ "Depleted (0.05)",
+    .default = "NS"
+))
+
+top_plot_info$binned_pval <- factor(top_plot_info$binned_pval, levels = c(
+    "Depleted (<0.001)", "Depleted (<0.01)", "Depleted (0.05)", "NS", "Enriched (0.05)", "Enriched (<0.01)", "Enriched (<0.001)"
+))
+
+
+
+top_plot_info <- top_plot_info |> dplyr::mutate(sig_levels = dplyr::case_when(
+    p.val < 0.01 ~ "Significant (p<0.01)",
+    p.val < 0.05 ~ "Significant (p<0.05)",
+    .default = "NS"
+))
+
+top_plot_info$sig_levels <- factor(top_plot_info$sig_levels, levels = c(
+    "NS", "Significant (p<0.05)", "Significant (p<0.01)"
+))
+
+top_plot_info$p.val <- as.numeric(top_plot_info$p.val)
+top_plot_info$coef <- as.numeric(top_plot_info$coef)
+
+
+lineage_group_names_df <- data.frame(
+    lineage_group = c("CD8", "CD4", "M", "B", "Other", "Nk", "E"),
+    lineage_group_name = c("CD8+ T Cell", "CD4+ T Cell", "Myeloid", "B Cell", "Other", "Nk Cell", "Erythroid")
+)
+rownames(lineage_group_names_df) <- lineage_group_names_df$lineage_group
+
+top_plot_info$cellID_short <- factor(top_plot_info$cellID_short, levels = cellID_short_ordering)
+
+for (i in types_list[[idx_name]]) {
+    lineage_group_name <- lineage_group_names_df[i, "lineage_group_name"]
+    sub_wilcox_out <- top_plot_info |> dplyr::filter(lineage_group %in% i)
+
+    sub_wilcox_out$sig_binned_value <- factor(sub_wilcox_out$binned_pval, levels = c(
+        "NS", "Significant (p<0.05)", "Significant (p<0.01)"
+    ))
+
+    top_plot_list[[i]] <- ggplot(sub_wilcox_out) +
+        geom_point(aes(x = cellID_short, y = variable_name, fill = coef, size = sig_levels, shape = sig_levels), color = "#868686", show.legend = TRUE) +
+        scale_fill_gradient2(
+            low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.31, 0.31),
+            oob = squish
+        ) +
+        scale_size_manual(values = c("Significant (p<0.01)" = 7.5, "Significant (p<0.05)" = 6, "NS" = 4.25), drop = F) +
+        scale_shape_manual(values = c("Significant (p<0.01)" = 22, "Significant (p<0.05)" = 23, "NS" = 21), drop = F) +
+        theme_prism() +
+        xlab("Cluster") +
+        ylab("") +
+        ggtitle(lineage_group_name) +
+        guides(size = guide_legend(override.aes = list(colour = "grey", fill = "white"), ncol = 1, byrow = T)) +
+        theme(
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank(),
+            axis.title.x = element_blank(),
+            # axis.line.x = element_blank(),
+            plot.margin = unit(c(0, 1, 0, 0), "lines"),
+            legend.position = "top"
+        )
+    if (i != types_list[[idx_name]][[1]]) {
+        top_plot_list[[i]] <- top_plot_list[[i]] + theme(
+            axis.text.y = element_blank(),
+            axis.ticks.y = element_blank(),
+            axis.title.y = element_blank(),
+            axis.line.y = element_blank(),
+            axis.ticks.length.y = unit(0, "lines")
+        )
+    }
+
+    top_plot_list[[i]] <- top_plot_list[[i]] + coord_fixed()
+}
+plot <- patchwork::wrap_plots(c(top_plot_list), nrow = 1, ncol = length(types_list[[idx_name]]), byrow = T, guides = "collect", axes = "collect", axes_titles = "collect")
+plot_both <- patchwork::wrap_plots(c(top_plot_list, expr_plot_list), nrow = 2, ncol = length(types_list[[idx_name]]), byrow = T, guides = "collect", axes = "collect", axes_titles = "collect") & theme(legend.position = "bottom", legend.direction = "vertical")
+
+pdf_and_png(plot, output_corr, paste0("TEST_UPPER_Panel_Abundance"), pdfWidth = 8, pdfHeight = 2, scale = 2.5)
+
+pdf_and_png(plot_both, output_corr, paste0("TEST_combined_panel_abundance"), pdfWidth = 8, pdfHeight = 3.2, scale = 2.5)
+```
+
+
+```{r}
+baseline@meta.data <- baseline@meta.data |> dplyr::mutate(maf_combined_call = dplyr::case_when(
+    maf_call == "yes" | mafa_call == "yes" | mafb_call == "yes" ~ "yes",
+    maf_call == "no" & mafa_call == "no" & mafb_call == "no" ~ "no",
+    is.na(maf_call) | is.na(mafa_call) | is.na(mafb_call) ~ NA,
+    .default = "ERROR"
+))
+
+baseline@meta.data <- baseline@meta.data |> dplyr::mutate(nsd2_1q21_multi = dplyr::case_when(
+    is.na(nsd2_call) | is.na(seqwgs_cp_1q21_call) ~ NA,
+    nsd2_call == "yes" & seqwgs_cp_1q21_call == "yes" ~ "NSD2_1Q",
+    nsd2_call == "yes" & seqwgs_cp_1q21_call == "no" ~ "NSD2",
+    # maf_combined_call == "yes" & seqwgs_cp_1q21_call == "yes" ~ "MAF+1q21",
+    nsd2_call == "no" & seqwgs_cp_1q21_call == "yes" ~ "1Q",
+    nsd2_call == "no" & seqwgs_cp_1q21_call == "no" ~ "None",
+    .default = "UNHANDLED CASE"
+))
+
+
+table(baseline@meta.data$nsd2_1q21_multi)
+table(baseline@meta.data$nsd2_1q21_multi, baseline@meta.data$nsd2_call)
+table(baseline@meta.data$nsd2_1q21_multi, baseline@meta.data$seqwgs_cp_1q21_call)
+table(baseline@meta.data$nsd2_1q21_multi, baseline@meta.data$IMWG_FLAG_NSD2_AND_1Q21)
+```
+
+```{r}
+md_bl <- dplyr::distinct(baseline@meta.data, public_id, davies_based_risk, nsd2_call, maf_combined_call, seqwgs_cp_17p13_call, seqwgs_cp_1q21_call, nsd2_1q21_multi, D_IM_FLOWCYT_PCT_PC_IN_BM_HIGH, PROLIF_INDEX, d_dx_amm_age)
+
+
+p1 <- md_bl |>
+    dplyr::filter(!is.na(nsd2_1q21_multi)) |>
+    ggplot(aes(x = nsd2_1q21_multi, y = PROLIF_INDEX, fill = nsd2_1q21_multi, color = nsd2_1q21_multi)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+p2 <- md_bl |>
+    ggplot(aes(x = nsd2_1q21_multi, y = D_IM_FLOWCYT_PCT_PC_IN_BM_HIGH, fill = nsd2_1q21_multi, color = nsd2_1q21_multi)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+p3 <- md_bl |>
+    ggplot(aes(x = maf_combined_call, y = D_IM_FLOWCYT_PCT_PC_IN_BM_HIGH, fill = maf_combined_call, color = maf_combined_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+p4 <- md_bl |>
+    ggplot(aes(x = seqwgs_cp_17p13_call, y = D_IM_FLOWCYT_PCT_PC_IN_BM_HIGH, fill = seqwgs_cp_17p13_call, color = seqwgs_cp_17p13_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+```
+
+## Compute a cluster average
+
+```{r}
+averageMod <- baseline@meta.data %>%
+    dplyr::group_by(lineage_group, public_id) %>%
+    dplyr::summarise(
+        "NaiveT" = mean(Naive),
+        "CytotoxicT" = mean(Cytotoxic),
+        "ExhaustedT" = mean(Exhaustion),
+        # "DysfunctionalT" = mean(Dysfunctional),
+        # "SASP" = mean(SASP),
+        "IFN" = mean(IFN),
+        "IFNA" = mean(IFNA)
+
+        # "HLA" = mean(HLA)
+    ) |>
+    gather(Module, Score, -lineage_group, -public_id) |>
+    as.data.frame()
+
+diff_expr <- averageMod
+```
+
+```{r}
+averageMod_immune <- baseline@meta.data %>%
+    dplyr::filter(lineage_group != "P" & lineage_group != "LQ") |>
+    dplyr::group_by(public_id) %>%
+    dplyr::summarise(
+        "NaiveT" = mean(Naive),
+        "CytotoxicT" = mean(Cytotoxic),
+        "ExhaustedT" = mean(Exhaustion),
+        # "DysfunctionalT" = mean(Dysfunctional),
+        # "SASP" = mean(SASP),
+        "IFN" = mean(IFN),
+        "IFNA" = mean(IFNA)
+
+        # "HLA" = mean(HLA)
+    ) |>
+    gather(Module, Score, -public_id) |>
+    as.data.frame()
+
+diff_expr_immune <- averageMod_immune
+```
+
+```{r}
+bulkIFN <- readRDS(file.path("output", "BulkRNA_misc_GSVA", "GSVA_IFN.rds"))
+
+bulkIFN_subset <- bulkIFN |> dplyr::select(IFN_Score, public_id)
+```
+
+```{r}
+diff_expr_IFNA <- diff_expr_immune |> dplyr::filter(Module == "IFNA")
+test <- dplyr::left_join(diff_expr_IFNA, bulkIFN_subset, by = "public_id")
+
+test <- test |> na.omit()
+```
+
+```{r}
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, Study_Site)
+test <- test |> dplyr::left_join(md_bl, by = "public_id")
+```
+
+```{r}
+library(ggstatsplot)
+UCELL_test <- test
+p1 <- ggscatterstats(test, x = IFN_Score, y = Score, xlab = "CD138+ Bulk IFNA Score (GSVA)", ylab = "Immune scRNA IFNA Score (UCELL)", type = "robust")
+
+p2 <- grouped_ggscatterstats(test, x = IFN_Score, y = Score, xlab = "CD138+ Bulk IFNA Score (GSVA)", ylab = "Immune scRNA IFNA Score (UCELL)", type = "robust", grouping.var = Study_Site)
+
+test <- patchwork::wrap_plots(list(p1, p2), ncol = 2, widths = c(2, 2))
+
+pdf_and_png(test, output_corr, "correlationg_ggscatter_stats", pdfWidth = 6, pdfHeight = 3, scale = 4)
+
+pdf_and_png(p1, output_corr, "correlationg_ggscatter_stats_P1_Only", pdfWidth = 3, pdfHeight = 3, scale = 2)
+```
+
+```{r}
+bl_noplasma <- baseline |> subset(subset = (lineage_group %ni% c("P", "LQ")))
+bl_plasma <- baseline |> subset(subset = (lineage_group %in% c("P")))
+```
+
+```{r}
+tmp_bl_md <- md_bl
+tmp_bl_md$public_id <- gsub("_", "-", tmp_bl_md$public_id)
+
+
+# Seurat V5
+# pseudo_tc <- AggregateExpression(bl_noplasma, assays = "RNA", return.seurat = T, group.by = c("public_id"))
+# Seurat V4
+pseudo_tc <- Seurat::PseudobulkExpression(bl_noplasma, assays = "RNA", return.seurat = T, group.by = c("public_id"), method = "aggregate")
+
+
+pseudo_tc@meta.data$sample_name <- rownames(pseudo_tc@meta.data)
+pseudo_tc@meta.data <- dplyr::left_join(pseudo_tc@meta.data, tmp_bl_md, by = "public_id")
+rownames(pseudo_tc@meta.data) <- pseudo_tc@meta.data$sample_name
+
+counts <- GetAssayData(pseudo_tc, "RNA", "counts")
+
+d0 <- DGEList(counts)
+d0 <- calcNormFactors(d0)
+
+cutoff <- 1
+drop <- which(apply(cpm(d0), 1, max) < cutoff)
+d <- d0[-drop, ]
+dim(d) # number of genes left
+```
+
+```{r}
+immune_gs <- list("IFNA" = c(
+    "IFI44L",
+    "ISG15",
+    "XAF1",
+    "IFI6",
+    "MX1",
+    "LY6E",
+    "EIF2AK2",
+    "STAT1",
+    "MX2",
+    "IFIT3",
+    "ISG20",
+    "OAS1",
+    "IFI44",
+    "IRF7",
+    "IFIT1",
+    "OAS3",
+    "IFI35",
+    "OAS2",
+    "IFI27"
+))
+```
+
+
+```{r}
+cpm_y <- cpm(d, log = TRUE)
+
+# Run GSVA
+library(GSVA)
+
+
+gbmPar <- gsvaParam(as.matrix(cpm_y),
+    immune_gs,
+    kcdf = "Gaussian" # "Gaussian" for logCPM,logRPKM,logTPM, "Poisson" for counts
+)
+en_immune <- gsva(gbmPar)
+```
+
+```{r}
+df_immune <- data.frame(public_id = colnames(en_immune), IFNA_GSVA_Immune = en_immune["IFNA", ])
+df_immune$public_id <- gsub("-", "_", df_immune$public_id)
+
+test <- dplyr::left_join(df_immune, bulkIFN_subset, by = "public_id")
+
+test <- test |> na.omit()
+
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, Study_Site)
+test <- test |> dplyr::left_join(md_bl, by = "public_id")
+```
+
+```{r}
+p1 <- ggscatterstats(test, x = IFN_Score, y = IFNA_GSVA_Immune, xlab = "CD138+ Bulk IFNA Score (GSVA)", ylab = "Immune Pseudo-Bulk IFNA Score (GSVA)", type = "robust")
+
+p2 <- grouped_ggscatterstats(test, x = IFN_Score, y = IFNA_GSVA_Immune, xlab = "CD138+ Bulk IFNA Score (GSVA)", ylab = "Immune Pseudo-Bulk IFNA Score (GSVA)", type = "robust", grouping.var = Study_Site)
+
+test <- patchwork::wrap_plots(list(p1, p2), ncol = 2, widths = c(2, 2))
+
+pdf_and_png(test, output_corr, "correlationg_ggscatter_stats_PSEUDOBULK_GSVA", pdfWidth = 6, pdfHeight = 3, scale = 3)
+
+pdf_and_png(p1, output_corr, "correlationg_ggscatter_stats_PSEUDOBULK_GSVA_SINGLE_PLOT", pdfWidth = 3, pdfHeight = 3, scale = 2)
+```
+
+
+
+```{r}
+p <- ggplot(test, aes(x = IFN_Score, y = IFNA_GSVA_Immune)) +
+    geom_point(aes(color = Study_Site), alpha = 0.25, size = 2) +
+    geom_smooth(method = "lm", formula = "y~x", color = "black") +
+    geom_smooth(method = "lm", formula = "y~x", aes(color = Study_Site, group = Study_Site, fill = Study_Site), alpha = 0.2, linetype = "dashed", se = F) +
+    theme_prism() +
+    xlab("IFNA Score (CD138+ Bulk RNAseq)") +
+    ylab("IFNA Score (Immune Pseudobulk scRNAseq)") +
+    ggtitle("Correlation of IFNA Signature Scores") +
+    coord_equal()
+
+pdf_and_png(p, output_corr, "ggplot_correlation", pdfWidth = 3, pdfHeight = 3, scale = 2)
+```
+
+```{r}
+p <- ggplot(UCELL_test, aes(x = IFN_Score, y = Score)) +
+    geom_point(aes(color = Study_Site), alpha = 0.25, size = 2) +
+    geom_smooth(method = "lm", formula = "y~x", color = "black") +
+    geom_smooth(method = "lm", formula = "y~x", aes(color = Study_Site, group = Study_Site, fill = Study_Site), alpha = 0.2, linetype = "dashed", se = F) +
+    theme_prism() +
+    xlab("IFNA Score (CD138+ Bulk RNAseq)") +
+    ylab("IFNA Score (Immune UCELL Avg scRNAseq)") +
+    ggtitle("Correlation of IFNA Signature Scores")
+
+pdf_and_png(p, output_corr, "ggplot_correlation_UCELL", pdfWidth = 3, pdfHeight = 3, scale = 2)
+```
+
+```{r}
+tmp_bl_md <- md_bl
+tmp_bl_md$public_id <- gsub("_", "-", tmp_bl_md$public_id)
+
+cell_counts <- table(bl_plasma$public_id) |> as.data.frame()
+colnames(cell_counts) <- c("public_id", "count")
+cell_counts$public_id <- gsub("_", "-", cell_counts$public_id)
+
+# Seurat V5
+# pseudo_tc_plasma <- AggregateExpression(bl_plasma, assays = "RNA", return.seurat = T, group.by = c("public_id"))
+
+# Seurat V4
+pseudo_tc_plasma <- Seurat::PseudobulkExpression(bl_plasma, assays = "RNA", return.seurat = T, group.by = c("public_id"), method = "aggregate")
+
+
+pseudo_tc_plasma@meta.data$sample_name <- rownames(pseudo_tc_plasma@meta.data)
+pseudo_tc_plasma@meta.data <- dplyr::left_join(pseudo_tc_plasma@meta.data, tmp_bl_md, by = "public_id")
+pseudo_tc_plasma@meta.data <- dplyr::left_join(pseudo_tc_plasma@meta.data, cell_counts, by = "public_id")
+rownames(pseudo_tc_plasma@meta.data) <- pseudo_tc_plasma@meta.data$sample_name
+```
+
+
+
+```{r}
+high_pc_count <- pseudo_tc_plasma |> subset(subset = (count >= 50))
+
+counts <- GetAssayData(high_pc_count, "RNA", "counts")
+
+d0 <- DGEList(counts)
+d0 <- calcNormFactors(d0)
+
+cutoff <- 1
+drop <- which(apply(cpm(d0), 1, max) < cutoff)
+d <- d0[-drop, ]
+dim(d) # number of genes left
+
+immune_gs <- list("IFNA" = c(
+    "IFI44L",
+    "ISG15",
+    "XAF1",
+    "IFI6",
+    "MX1",
+    "LY6E",
+    "EIF2AK2",
+    "STAT1",
+    "MX2",
+    "IFIT3",
+    "ISG20",
+    "OAS1",
+    "IFI44",
+    "IRF7",
+    "IFIT1",
+    "OAS3",
+    "IFI35",
+    "OAS2",
+    "IFI27"
+))
+
+cpm_y <- cpm(d, log = TRUE)
+
+# Run GSVA
+library(GSVA)
+
+
+gbmPar <- gsvaParam(as.matrix(cpm_y),
+    immune_gs,
+    kcdf = "Gaussian" # "Gaussian" for logCPM,logRPKM,logTPM, "Poisson" for counts
+)
+en_plasma <- gsva(gbmPar)
+```
+
+```{r}
+df_plasma <- data.frame(public_id = colnames(en_plasma), IFNA_GSVA_Plasma = en_plasma["IFNA", ])
+df_plasma$public_id <- gsub("-", "_", df_plasma$public_id)
+
+test <- dplyr::left_join(df_plasma, bulkIFN_subset, by = "public_id")
+test <- dplyr::left_join(test, df_immune, by = "public_id")
+
+test <- test |> na.omit()
+
+md_bl <- baseline@meta.data |> dplyr::distinct(public_id, Study_Site)
+test <- test |> dplyr::left_join(md_bl, by = "public_id")
+
+# p1 <- ggscatterstats(test, x = IFNA_GSVA_Immune, y = IFNA_GSVA_Plasma, xlab = "scRNA Plasma Cell IFNA Score (GSVA)", ylab = "Bulk IFNA Score (GSVA)", type = "robust")
+# p2 <- grouped_ggscatterstats(test, x = IFNA_GSVA_Immune, y = IFNA_GSVA_Plasma, xlab = "scRNA Plasma Cell IFNA Score (GSVA)", ylab = "Immune IFNA Score (GSVA)", type = "robust", grouping.var = Study_Site)
+
+
+p1 <- ggscatterstats(test, x = IFN_Score, y = IFNA_GSVA_Plasma, xlab = "CD138+ Bulk IFNA Score (GSVA)", ylab = "Bulk IFNA Score (GSVA)", type = "robust")
+p2 <- grouped_ggscatterstats(test, x = IFN_Score, y = IFNA_GSVA_Plasma, xlab = "CD138+ Bulk IFNA Score (GSVA)", ylab = "Bulk IFNA Score (GSVA)", type = "robust", grouping.var = Study_Site)
+
+# test <- patchwork::wrap_plots(list(p1, p2), ncol = 2, widths = c(2, 2))
+
+pdf_and_png(test, output_corr, "correlationg_ggscatter_stats_PSEUDOBULK_GSVA_PLASMA", pdfWidth = 6, pdfHeight = 3, scale = 3)
+
+pdf_and_png(p1, output_corr, "correlationg_ggscatter_stats_PSEUDOBULK_GSVA_SINGLE_PLOT_PLASMA", pdfWidth = 3, pdfHeight = 3, scale = 2)
+```
+
+```{r}
+p <- ggplot(test, aes(x = IFN_Score, y = IFNA_GSVA_Plasma)) +
+    geom_point(aes(color = Study_Site), alpha = 0.25, size = 2) +
+    geom_smooth(method = "lm", formula = "y~x", color = "black") +
+    geom_smooth(method = "lm", formula = "y~x", aes(color = Study_Site, group = Study_Site, fill = Study_Site), alpha = 0.2, linetype = "dashed", se = F) +
+    theme_prism() +
+    xlab("IFNA Score (CD138+ Bulk RNAseq)") +
+    ylab("IFNA Score (Plasma Cell Pseudobulk scRNAseq)") +
+    ggtitle("Correlation of IFNA Signature Scores") +
+    coord_equal()
+
+pdf_and_png(p, output_corr, "ggplot_correlation_scrna_pc_to_bulk", pdfWidth = 3, pdfHeight = 3, scale = 2)
+```
+
+```{r}
+p <- ggplot(test, aes(x = IFNA_GSVA_Plasma, y = IFNA_GSVA_Immune)) +
+    geom_point(aes(color = Study_Site), alpha = 0.25, size = 2) +
+    geom_smooth(method = "lm", formula = "y~x", color = "black") +
+    geom_smooth(method = "lm", formula = "y~x", aes(color = Study_Site, group = Study_Site, fill = Study_Site), alpha = 0.2, linetype = "dashed", se = F) +
+    theme_prism() +
+    xlab("IFNA Score (Plasma Cell Pseudobulk scRNAseq)") +
+    ylab("IFNA Score (Immune Pseudobulk scRNAseq)") +
+    ggtitle("Correlation of IFNA Signature Scores") +
+    coord_equal()
+
+pdf_and_png(p, output_corr, "ggplot_correlation_scrna_pc_to_immune", pdfWidth = 3, pdfHeight = 3, scale = 2.5)
+```
+
+
+
+
+```{r}
+md_bl <- dplyr::distinct(baseline@meta.data, public_id, davies_based_risk, nsd2_call, maf_combined_call, seqwgs_cp_17p13_call, seqwgs_cp_1q21_call, nsd2_1q21_multi, progression_group)
+```
+
+# leftjoin baseline md of risk groups 
+# compute average of averages by risk group and cell types
+# (Join all these together... will not be one pass)
+# 
+
+
+```{r}
+diff_expr <- dplyr::left_join(averageMod, md_bl, by = "public_id", suffix = c("", ".a"))
+
+pat_mean <- averageMod |>
+    dplyr::group_by(Module, lineage_group) |>
+    dplyr::summarize(mean_module = mean(Score), var_module = var(Score))
+
+
+avg_expr_davies <- diff_expr |>
+    dplyr::group_by(lineage_group, Module, davies_based_risk) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::filter(davies_based_risk %in% c("high_risk", "standard_risk")) |>
+    dplyr::mutate(factor = paste0("davies_based_risk", "_", davies_based_risk)) |>
+    dplyr::select(-davies_based_risk)
+
+avg_expr_nsd2 <- diff_expr |>
+    dplyr::group_by(lineage_group, Module, nsd2_call) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::filter(nsd2_call == "yes") |>
+    dplyr::mutate(factor = paste0("nsd2_call", "_", nsd2_call)) |>
+    dplyr::select(-nsd2_call)
+
+avg_expr_nsd2_1q <- diff_expr |>
+    dplyr::group_by(lineage_group, Module, nsd2_1q21_multi) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::mutate(factor = paste0("nsd2_1q21_multi", "_", nsd2_1q21_multi)) |>
+    dplyr::select(-nsd2_1q21_multi)
+
+
+avg_expr_maf <- diff_expr |>
+    dplyr::group_by(lineage_group, Module, maf_combined_call) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::filter(maf_combined_call == "yes") |>
+    dplyr::mutate(factor = paste0("maf_combined_call", "_", maf_combined_call)) |>
+    dplyr::select(-maf_combined_call)
+
+avg_expr_17p13 <- diff_expr |>
+    dplyr::group_by(lineage_group, Module, seqwgs_cp_17p13_call) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::filter(seqwgs_cp_17p13_call == "yes") |>
+    dplyr::mutate(factor = paste0("seqwgs_cp_17p13_call", "_", seqwgs_cp_17p13_call)) |>
+    dplyr::select(-seqwgs_cp_17p13_call)
+
+avg_expr_1q21 <- diff_expr |>
+    dplyr::group_by(lineage_group, Module, seqwgs_cp_1q21_call) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::filter(seqwgs_cp_1q21_call == "yes") |>
+    dplyr::mutate(factor = paste0("seqwgs_cp_1q21_call", "_", seqwgs_cp_1q21_call)) |>
+    dplyr::select(-seqwgs_cp_1q21_call)
+```
+
+
+```{r}
+test <- diff_expr |>
+    dplyr::filter(lineage_group == "CD4", Module == "ExhaustedT", maf_combined_call %in% c("yes", "no")) |>
+    ggplot(aes(x = maf_combined_call, y = Score, fill = maf_combined_call, color = maf_combined_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+library(ggstatsplot)
+ggbar <- diff_expr |>
+    dplyr::filter(lineage_group == "CD4", Module == "ExhaustedT", davies_based_risk %in% c("high_risk", "standard_risk")) |>
+    ggbetweenstats(x = nsd2_1q21_multi, y = Score, type = "robust")
+```
+
+```{r}
+all <- rbind(avg_expr_davies, avg_expr_nsd2, avg_expr_maf, avg_expr_17p13, avg_expr_1q21)
+
+all <- all |>
+    dplyr::left_join(pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (mean - mean_module) / sd(mean), min_max = 2 * ((mean - min(mean)) / max(mean - min(mean)) - 0.5))
+
+all$factor <- factor(all$factor, levels = rev(unique(all$factor)))
+
+all <- all |> dplyr::mutate(grouping = dplyr::case_when(
+    factor %in% c("davies_based_risk_high_risk", "davies_based_risk_standard_risk") ~ "Combined",
+    .default = "Individual"
+))
+
+
+df_factor_names <- data.frame(
+    factor = c("seqwgs_cp_17p13_call_yes", "maf_combined_call_yes", "seqwgs_cp_1q21_call_yes", "nsd2_call_yes", "davies_based_risk_standard_risk", "davies_based_risk_high_risk"),
+    variable_names = c("Del 17p13", "MAF, MAFA, MAFB", "Gain 1q21", "NSD2 t(4;14)", "Standard Risk", "High Risk")
+)
+all <- dplyr::left_join(all, df_factor_names, by = "factor")
+all$variable_names <- factor(all$variable_names, levels = rev(unique(df_factor_names$variable_names)))
+
+all_IFN <- all |> dplyr::filter(Module == "IFNA")
+
+tmp <- diff_expr |>
+    dplyr::left_join(pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (Score - mean_module) / sd(Score), min_max = 2 * ((Score - min(Score)) / max(Score - min(Score)) - 0.5))
+
+global_mean <- tmp |>
+    group_by(public_id)
+
+
+PAT_ORDERING <- diff_expr_immune |>
+    dplyr::filter(Module == "IFNA") |>
+    dplyr::arrange(Score)
+global_mean$public_id <- factor(global_mean$public_id, levels = PAT_ORDERING$public_id)
+
+RATIO_PAT_INFO <- 1.5
+p <- ggplot(global_mean |> dplyr::filter(Module == "IFNA"), x = public_id, y = lineage_group, fill = z) +
+    geom_tile(aes(x = public_id, y = lineage_group, fill = z), color = "#484848", lwd = 0.1, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    ylab("Cell Type") +
+    theme(
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+        axis.text.x = element_blank(),
+        plot.title = element_blank(),
+        axis.ticks.x = element_blank()
+    ) +
+    coord_fixed(ratio = 5) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    theme(legend.position = "bottom") +
+    scale_y_discrete(expand = c(0, 0))
+
+
+p_tile_1q21 <- ggplot(global_mean |> dplyr::filter(Module == "IFNA"), x = public_id, y = "Gain 1q21", fill = seqwgs_cp_1q21_call) +
+    geom_tile(aes(x = public_id, y = "Gain 1q21", fill = seqwgs_cp_1q21_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#e48a04")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+
+p_tile_17p13 <- ggplot(global_mean |> dplyr::filter(Module == "IFNA"), x = public_id, y = "Del 17p13", fill = seqwgs_cp_17p13_call) +
+    geom_tile(aes(x = public_id, y = "Del 17p13", fill = seqwgs_cp_17p13_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#009bcf")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+p_tile_nsd2 <- ggplot(global_mean |> dplyr::filter(Module == "IFNA"), x = public_id, y = "NSD2 t(4;14)", fill = nsd2_call) +
+    geom_tile(aes(x = public_id, y = "NSD2 t(4;14)", fill = nsd2_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#c32400")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    ggtitle("IFN-1 Signature Score") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+p_tile_maf <- ggplot(global_mean |> dplyr::filter(Module == "IFNA"), x = public_id, y = "MAF, MAFA, MAFB", fill = maf_combined_call) +
+    geom_tile(aes(x = public_id, y = "MAF, MAFA, MAFB", fill = maf_combined_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#00b02c")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        plot.title = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+TEST <- patchwork::wrap_plots(list(p_tile_nsd2, p_tile_1q21, p_tile_maf, p_tile_17p13, p), ncol = 1, nrow = 5)
+pdf_and_png(TEST, output_corr, "IFN_plot_pat_with_info", pdfWidth = 12, pdfHeight = 2.7, scale = 2)
+
+p2 <- ggplot(all_IFN |> dplyr::filter(grouping == "Combined"), x = variable_names, y = lineage_group, fill = z) +
+    geom_tile(aes(x = variable_names, y = lineage_group, fill = z), color = "black", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    ylab("") +
+    xlab("") +
+    theme(
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank(),
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 2
+        )
+    ) +
+    coord_fixed(ratio = 1) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    theme(legend.position = "bottom") +
+    scale_y_discrete(expand = c(0, 0))
+
+p3 <- ggplot(all_IFN |> dplyr::filter(grouping == "Individual"), x = variable_names, y = lineage_group, fill = z) +
+    geom_tile(aes(x = variable_names, y = lineage_group, fill = z), color = "black", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    ylab("") +
+    xlab("") +
+    theme(
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        axis.text.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.length.y = unit(0, "lines"),
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 1
+        )
+    ) +
+    coord_fixed(ratio = 1) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    theme(legend.position = "bottom") +
+    scale_y_discrete(expand = c(0, 0))
+
+# TEST <- patchwork::wrap_plots(list(p_tile_nsd2, plot_spacer(), plot_spacer(), p_tile_1q21, plot_spacer(), plot_spacer(), p_tile_maf, plot_spacer(), plot_spacer(), p_tile_17p13,  plot_spacer(),  plot_spacer(), p, p2, p3), ncol = 3, nrow = 5, byrow=TRUE)
+
+# pdf_and_png(TEST, output_corr, "LIKELY_BROKEN", pdfWidth = 12, pdfHeight = 5, scale = 2)
+
+TEST <- patchwork::wrap_plots(list(p2, p3), ncol = 2, nrow = 1)
+pdf_and_png(TEST, output_corr, "grouped_per_risk", pdfWidth = 4, pdfHeight = 2.7, scale = 2)
+
+
+# p2 <- ggplot(all |> dplyr::filter(lineage_group %in% c("CD8", "CD4"), Module %in% c("CytotoxicT", "NaiveT", "ExhaustedT", "DysfunctionalT", "IFN")), x = Module, y = factor, fill = z) +
+#     geom_tile(aes(x = Module, y = factor, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+#     scale_fill_gradient2(
+#         low = "#1d9ae3",
+#         high = "#f63575",
+#         limits = range(c(-3, 3)),
+#         oob = squish
+#     ) +
+#     facet_grid(grouping ~ lineage_group, scales = "free", space = "free") +
+#     theme_prism() +
+#     xlab("") +
+#     ylab("") +
+#     theme(
+#         axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+#         plot.margin = margin(
+#             14 / 2, 14 / 2,
+#             0, 14 / 2
+#         ),
+#     ) +
+#     # element_text(
+#     #     angle = 90,
+#     #     vjust = 0.5, hjust = 1,
+#     # )) +
+#     guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+
+
+# p3 <- ggplot(all |> dplyr::filter(lineage_group %in% c("CD8", "CD4"), Module %in% c("CytotoxicT", "NaiveT", "ExhaustedT", "DysfunctionalT", "IFN"), factor %in% c("nsd2_call_yes", "seqwgs_cp_1q21_call_yes", "nsd2_1q21_multi_1Q", "nsd2_1q21_multi_NSD2", "nsd2_1q21_multi_NSD2_1Q", "nsd2_1q21_multi_None")), x = Module, y = factor, fill = z) +
+#     geom_tile(aes(x = Module, y = factor, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+#     scale_fill_gradient2(
+#         low = "#1d9ae3",
+#         high = "#f63575",
+#         limits = range(c(-3, 3)),
+#         oob = squish
+#     ) +
+#     facet_grid(~lineage_group, scales = "free_x", space = "free_x") +
+#     theme_prism() +
+#     xlab("") +
+#     ylab("") +
+#     theme(
+#         plot.margin = margin(
+#             14 / 2, 14 / 2,
+#             0, 14 / 2
+#         ),
+#     ) +
+#     # element_text(
+#     #     angle = 90,
+#     #     vjust = 0.5, hjust = 1,
+#     # )) +
+#     guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+
+combined <- patchwork::wrap_plots(list(p, p2), ncol = 2, widths = c(10, 1))
+
+pdf_and_png(p2, output_corr, "IFN_grouping", pdfWidth = 2, pdfHeight = 3, scale = 2)
+
+pdf_and_png(p, output_corr, "IFN_plot_pat", pdfWidth = 8, pdfHeight = 1.8, scale = 2)
+pdf_and_png(combined, output_corr, "IFN_plot_pat_combined", pdfWidth = 12, pdfHeight = 3, scale = 2)
+
+# pdf_and_png(p2, output_corr, "T_nk_plot", pdfWidth = 4.5, pdfHeight = 2.5, scale = 2)
+# pdf_and_png(p3, output_corr, "T_nk_plot_nsd2_1q_comp", pdfWidth = 12, pdfHeight = 4, scale = 2)
+```
+
+```{r}
+all <- rbind(gene_avg_expr_davies, gene_avg_expr_nsd2, gene_avg_expr_maf, gene_avg_expr_17p13, gene_avg_expr_1q21)
+
+all <- all |>
+    dplyr::left_join(gene_pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (mean - mean_module) / sd(mean), min_max = 2 * ((mean - min(mean)) / max(mean - min(mean)) - 0.5))
+
+all$factor <- factor(all$factor, levels = rev(unique(all$factor)))
+
+all <- all |> dplyr::mutate(grouping = dplyr::case_when(
+    factor %in% c("davies_based_risk_high_risk", "davies_based_risk_standard_risk") ~ "Combined",
+    .default = "Individual"
+))
+
+
+df_factor_names <- data.frame(
+    factor = c("seqwgs_cp_17p13_call_yes", "maf_combined_call_yes", "seqwgs_cp_1q21_call_yes", "nsd2_call_yes", "davies_based_risk_standard_risk", "davies_based_risk_high_risk"),
+    variable_names = c("Del 17p13", "MAF, MAFA, MAFB", "Gain 1q21", "NSD2 t(4;14)", "Standard Risk", "High Risk")
+)
+all <- dplyr::left_join(all, df_factor_names, by = "factor")
+all$variable_names <- factor(all$variable_names, levels = rev(unique(df_factor_names$variable_names)))
+
+all_IFN <- all |> dplyr::filter(Module == "IFNA")
+
+tmp <- diff_expr_avg |>
+    dplyr::left_join(gene_pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (Score - mean_module) / sd(Score), min_max = 2 * ((Score - min(Score)) / max(Score - min(Score)) - 0.5))
+
+global_mean <- tmp |>
+    dplyr::filter(lineage_group == "CD8") |>
+    group_by(public_id)
+
+
+PAT_ORDERING <- diff_expr |>
+    dplyr::filter(Module == "CytotoxicT", lineage_group == "CD8") |>
+    dplyr::arrange(Score)
+
+PAT_ORDERING <- PAT_ORDERING |>
+    dplyr::left_join(pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (Score - mean_module) / sd(Score), min_max = 2 * ((Score - min(Score)) / max(Score - min(Score)) - 0.5))
+
+
+global_mean$public_id <- factor(global_mean$public_id, levels = PAT_ORDERING$public_id)
+PAT_ORDERING$public_id <- factor(PAT_ORDERING$public_id, levels = PAT_ORDERING$public_id)
+
+global_mean <- global_mean |> dplyr::filter(progression_group %in% c("RP", "NP"))
+PAT_ORDERING <- PAT_ORDERING |> dplyr::filter(progression_group %in% c("RP", "NP"))
+
+RATIO_PAT_INFO <- 1.5
+p <- ggplot(global_mean |> dplyr::filter(Module %in% c("FGFBP2", "GNLY", "GZMH", "PRF1", "B3GAT1", "KLRG1", "ZEB2")), x = public_id, y = Module, fill = z) +
+    geom_tile(aes(x = public_id, y = Module, fill = z), color = "#484848", lwd = 0.1, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    ylab("Gene") +
+    theme(
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+        axis.text.x = element_blank(),
+        plot.title = element_blank(),
+        axis.ticks.x = element_blank()
+    ) +
+    coord_fixed(ratio = 5) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    theme(legend.position = "bottom") +
+    scale_y_discrete(expand = c(0, 0))
+
+p_sig <- ggplot(PAT_ORDERING, x = public_id, y = Score, fill = z) +
+    geom_tile(aes(x = public_id, y = Score, fill = z), color = "#484848", lwd = 0.1, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+
+p_tile_1q21 <- ggplot(global_mean, x = public_id, y = "Gain 1q21", fill = seqwgs_cp_1q21_call) +
+    geom_tile(aes(x = public_id, y = "Gain 1q21", fill = seqwgs_cp_1q21_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#e48a04")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+
+p_tile_17p13 <- ggplot(global_mean, x = public_id, y = "Del 17p13", fill = seqwgs_cp_17p13_call) +
+    geom_tile(aes(x = public_id, y = "Del 17p13", fill = seqwgs_cp_17p13_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#009bcf")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+p_tile_nsd2 <- ggplot(global_mean, x = public_id, y = "NSD2 t(4;14)", fill = nsd2_call) +
+    geom_tile(aes(x = public_id, y = "NSD2 t(4;14)", fill = nsd2_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#c32400")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    ggtitle("IFN-1 Signature Score") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+p_tile_maf <- ggplot(global_mean, x = public_id, y = "MAF, MAFA, MAFB", fill = maf_combined_call) +
+    geom_tile(aes(x = public_id, y = "MAF, MAFA, MAFB", fill = maf_combined_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#00b02c")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        plot.title = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+TEST <- patchwork::wrap_plots(list(p_tile_nsd2, p_tile_1q21, p_tile_maf, p_tile_17p13, p_sig, p), ncol = 1, nrow = 6)
+pdf_and_png(TEST, output_corr, "CYTO_GENE_PLOT", pdfWidth = 12, pdfHeight = 2.7, scale = 2)
+```
+
+
+```{r}
+all <- rbind(gene_avg_expr_davies, gene_avg_expr_nsd2, gene_avg_expr_maf, gene_avg_expr_17p13, gene_avg_expr_1q21)
+
+all <- all |>
+    dplyr::left_join(gene_pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (mean - mean_module) / sd(mean), min_max = 2 * ((mean - min(mean)) / max(mean - min(mean)) - 0.5))
+
+all$factor <- factor(all$factor, levels = rev(unique(all$factor)))
+
+all <- all |> dplyr::mutate(grouping = dplyr::case_when(
+    factor %in% c("davies_based_risk_high_risk", "davies_based_risk_standard_risk") ~ "Combined",
+    .default = "Individual"
+))
+
+
+df_factor_names <- data.frame(
+    factor = c("seqwgs_cp_17p13_call_yes", "maf_combined_call_yes", "seqwgs_cp_1q21_call_yes", "nsd2_call_yes", "davies_based_risk_standard_risk", "davies_based_risk_high_risk"),
+    variable_names = c("Del 17p13", "MAF, MAFA, MAFB", "Gain 1q21", "NSD2 t(4;14)", "Standard Risk", "High Risk")
+)
+all <- dplyr::left_join(all, df_factor_names, by = "factor")
+all$variable_names <- factor(all$variable_names, levels = rev(unique(df_factor_names$variable_names)))
+
+all_IFN <- all |> dplyr::filter(Module == "IFNA")
+
+tmp <- diff_expr_avg |>
+    dplyr::left_join(gene_pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (Score - mean_module) / sd(Score), min_max = 2 * ((Score - min(Score)) / max(Score - min(Score)) - 0.5))
+
+global_mean <- tmp |>
+    dplyr::filter(lineage_group == "CD8") |>
+    group_by(public_id)
+
+
+PAT_ORDERING <- diff_expr |>
+    dplyr::filter(Module == "ExhaustedT", lineage_group == "CD8") |>
+    dplyr::arrange(Score)
+
+PAT_ORDERING <- PAT_ORDERING |>
+    dplyr::left_join(pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (Score - mean_module) / sd(Score), min_max = 2 * ((Score - min(Score)) / max(Score - min(Score)) - 0.5))
+
+
+global_mean$public_id <- factor(global_mean$public_id, levels = PAT_ORDERING$public_id)
+PAT_ORDERING$public_id <- factor(PAT_ORDERING$public_id, levels = PAT_ORDERING$public_id)
+
+RATIO_PAT_INFO <- 1.5
+p <- ggplot(global_mean |> dplyr::filter(Module %in% c("LAG3", "TIGIT", "TOX", "PDCD1")), x = public_id, y = Module, fill = z) +
+    geom_tile(aes(x = public_id, y = Module, fill = z), color = "#484848", lwd = 0.1, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    ylab("Gene") +
+    theme(
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+        axis.text.x = element_blank(),
+        plot.title = element_blank(),
+        axis.ticks.x = element_blank()
+    ) +
+    coord_fixed(ratio = 5) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    theme(legend.position = "bottom") +
+    scale_y_discrete(expand = c(0, 0))
+
+p_sig <- ggplot(PAT_ORDERING, x = public_id, y = Score, fill = z) +
+    geom_tile(aes(x = public_id, y = Score, fill = z), color = "#484848", lwd = 0.1, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+
+p_tile_1q21 <- ggplot(global_mean, x = public_id, y = "Gain 1q21", fill = seqwgs_cp_1q21_call) +
+    geom_tile(aes(x = public_id, y = "Gain 1q21", fill = seqwgs_cp_1q21_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#e48a04")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+
+p_tile_17p13 <- ggplot(global_mean, x = public_id, y = "Del 17p13", fill = seqwgs_cp_17p13_call) +
+    geom_tile(aes(x = public_id, y = "Del 17p13", fill = seqwgs_cp_17p13_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#009bcf")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+p_tile_nsd2 <- ggplot(global_mean, x = public_id, y = "NSD2 t(4;14)", fill = nsd2_call) +
+    geom_tile(aes(x = public_id, y = "NSD2 t(4;14)", fill = nsd2_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#c32400")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    ggtitle("IFN-1 Signature Score") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+p_tile_maf <- ggplot(global_mean, x = public_id, y = "MAF, MAFA, MAFB", fill = maf_combined_call) +
+    geom_tile(aes(x = public_id, y = "MAF, MAFA, MAFB", fill = maf_combined_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#00b02c")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        plot.title = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+TEST <- patchwork::wrap_plots(list(p_tile_nsd2, p_tile_1q21, p_tile_maf, p_tile_17p13, p_sig, p), ncol = 1, nrow = 6)
+pdf_and_png(TEST, output_corr, "CYTOTOX_GENE_PLOT", pdfWidth = 12, pdfHeight = 2.7, scale = 2)
+```
+
+
+
+```{r}
+all <- rbind(gene_avg_expr_davies, gene_avg_expr_nsd2, gene_avg_expr_maf, gene_avg_expr_17p13, gene_avg_expr_1q21)
+
+all <- all |>
+    dplyr::left_join(gene_pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (mean - mean_module) / sd(mean), min_max = 2 * ((mean - min(mean)) / max(mean - min(mean)) - 0.5))
+
+all$factor <- factor(all$factor, levels = rev(unique(all$factor)))
+
+all <- all |> dplyr::mutate(grouping = dplyr::case_when(
+    factor %in% c("davies_based_risk_high_risk", "davies_based_risk_standard_risk") ~ "Combined",
+    .default = "Individual"
+))
+
+
+df_factor_names <- data.frame(
+    factor = c("seqwgs_cp_17p13_call_yes", "maf_combined_call_yes", "seqwgs_cp_1q21_call_yes", "nsd2_call_yes", "davies_based_risk_standard_risk", "davies_based_risk_high_risk"),
+    variable_names = c("Del 17p13", "MAF, MAFA, MAFB", "Gain 1q21", "NSD2 t(4;14)", "Standard Risk", "High Risk")
+)
+all <- dplyr::left_join(all, df_factor_names, by = "factor")
+all$variable_names <- factor(all$variable_names, levels = rev(unique(df_factor_names$variable_names)))
+
+all_IFN <- all |> dplyr::filter(Module == "IFNA")
+
+tmp <- diff_expr_avg |>
+    dplyr::left_join(gene_pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (Score - mean_module) / sd(Score), min_max = 2 * ((Score - min(Score)) / max(Score - min(Score)) - 0.5))
+
+global_mean <- tmp |>
+    dplyr::filter(lineage_group == "CD4") |>
+    group_by(public_id)
+
+
+PAT_ORDERING <- diff_expr |>
+    dplyr::filter(Module == "ExhaustedT", lineage_group == "CD4") |>
+    dplyr::arrange(Score)
+
+PAT_ORDERING <- PAT_ORDERING |>
+    dplyr::left_join(pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (Score - mean_module) / sd(Score), min_max = 2 * ((Score - min(Score)) / max(Score - min(Score)) - 0.5))
+
+
+global_mean$public_id <- factor(global_mean$public_id, levels = PAT_ORDERING$public_id)
+PAT_ORDERING$public_id <- factor(PAT_ORDERING$public_id, levels = PAT_ORDERING$public_id)
+
+RATIO_PAT_INFO <- 1.5
+p <- ggplot(global_mean |> dplyr::filter(Module %in% c("LAG3", "TIGIT", "TOX", "PDCD1", "FOXP3", "CTLA4")), x = public_id, y = Module, fill = z) +
+    geom_tile(aes(x = public_id, y = Module, fill = z), color = "#484848", lwd = 0.1, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    ylab("Gene") +
+    theme(
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+        axis.text.x = element_blank(),
+        plot.title = element_blank(),
+        axis.ticks.x = element_blank()
+    ) +
+    coord_fixed(ratio = 5) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    theme(legend.position = "bottom") +
+    scale_y_discrete(expand = c(0, 0))
+
+p_sig <- ggplot(PAT_ORDERING, x = public_id, y = Score, fill = z) +
+    geom_tile(aes(x = public_id, y = Score, fill = z), color = "#484848", lwd = 0.1, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+
+p_tile_1q21 <- ggplot(global_mean, x = public_id, y = "Gain 1q21", fill = seqwgs_cp_1q21_call) +
+    geom_tile(aes(x = public_id, y = "Gain 1q21", fill = seqwgs_cp_1q21_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#e48a04")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+
+p_tile_17p13 <- ggplot(global_mean, x = public_id, y = "Del 17p13", fill = seqwgs_cp_17p13_call) +
+    geom_tile(aes(x = public_id, y = "Del 17p13", fill = seqwgs_cp_17p13_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#009bcf")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+p_tile_nsd2 <- ggplot(global_mean, x = public_id, y = "NSD2 t(4;14)", fill = nsd2_call) +
+    geom_tile(aes(x = public_id, y = "NSD2 t(4;14)", fill = nsd2_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#c32400")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    ggtitle("IFN-1 Signature Score") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+p_tile_maf <- ggplot(global_mean, x = public_id, y = "MAF, MAFA, MAFB", fill = maf_combined_call) +
+    geom_tile(aes(x = public_id, y = "MAF, MAFA, MAFB", fill = maf_combined_call), color = "#484848", lwd = 0.1, linetype = 1, show.legend = FALSE) +
+    scale_fill_manual(
+        values = c("no" = "white", "yes" = "#00b02c")
+    ) +
+    theme_prism() +
+    xlab("Patient") +
+    theme(
+        plot.margin = margin(
+            0, 0,
+            0, 0
+        ),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.length.x = unit(0, "lines"),
+        plot.title = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()
+    ) +
+    coord_fixed(ratio = RATIO_PAT_INFO) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    scale_y_discrete(expand = c(0, 0))
+
+TEST <- patchwork::wrap_plots(list(p_tile_nsd2, p_tile_1q21, p_tile_maf, p_tile_17p13, p_sig, p), ncol = 1, nrow = 6)
+pdf_and_png(TEST, output_corr, "CD4_EXH_GENE_PLOT", pdfWidth = 12, pdfHeight = 2.7, scale = 2)
+```
+
+
+
+```{r}
+output_rds <- file.path("output", "BulkRNA_misc_GSVA", "GSVA_IFN.rds")
+IFN_bulk <- readRDS(output_rds)
+
+IFN_bulk_filt <- IFN_bulk |> dplyr::select(public_id, IFN_Score)
+```
+
+
+```{r}
+gene_avg_expr <- AverageExpression(baseline, assays = "RNA", group.by = c("public_id", "lineage_group"), features = c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "PDCD1", "LAG3", "TOX", "TIGIT", "CTLA4", "FOXP3", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2", "CD69", "CD44", "CD74", "HLA-DPB1", "HLA-DRB1"))$RNA
+# colnames(avg_expr) <- gsub("-","_", colnames(avg_expr))
+```
+
+```{r}
+gene_avg_expr_df <- as.data.frame(gene_avg_expr)
+gene_avg_expr_df$gene <- rownames(gene_avg_expr_df)
+
+gene_avg_expr_df <- gene_avg_expr_df |> tidyr::pivot_longer(cols = colnames(gene_avg_expr), names_to = "name", values_to = "Expression")
+
+gene_avg_expr_df <- gene_avg_expr_df |> tidyr::separate(name, sep = "_", c("public_id", "lineage_group")) # dplyr::mutate(public_id = str_split(name, "_")[[1]][1], lineage_group = str_split(name, "_")[[1]][2])
+gene_avg_expr_df$public_id <- gsub("-", "_", gene_avg_expr_df$public_id)
+gene_avg_expr_df$Module <- gene_avg_expr_df$gene
+gene_avg_expr_df$Score <- gene_avg_expr_df$Expression
+```
+
+```{r}
+diff_expr_avg <- dplyr::left_join(gene_avg_expr_df, md_bl, by = "public_id")
+
+gene_pat_mean <- diff_expr_avg |>
+    dplyr::group_by(Module, lineage_group) |>
+    dplyr::summarize(mean_module = mean(Score), var_module = var(Score))
+
+gene_avg_expr_davies <- diff_expr_avg |>
+    dplyr::group_by(lineage_group, Module, davies_based_risk) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::filter(davies_based_risk %in% c("high_risk", "standard_risk")) |>
+    dplyr::mutate(factor = paste0("davies_based_risk", "_", davies_based_risk)) |>
+    dplyr::select(-davies_based_risk)
+
+gene_avg_expr_nsd2 <- diff_expr_avg |>
+    dplyr::group_by(lineage_group, Module, nsd2_call) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::filter(nsd2_call == "yes") |>
+    dplyr::mutate(factor = paste0("nsd2_call", "_", nsd2_call)) |>
+    dplyr::select(-nsd2_call)
+
+
+gene_avg_expr_nsd2_1q <- diff_expr_avg |>
+    dplyr::group_by(lineage_group, Module, nsd2_1q21_multi) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::mutate(factor = paste0("nsd2_1q21_multi", "_", nsd2_1q21_multi)) |>
+    dplyr::select(-nsd2_1q21_multi)
+
+
+gene_avg_expr_maf <- diff_expr_avg |>
+    dplyr::group_by(lineage_group, Module, maf_combined_call) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::filter(maf_combined_call == "yes") |>
+    dplyr::mutate(factor = paste0("maf_combined_call", "_", maf_combined_call)) |>
+    dplyr::select(-maf_combined_call)
+
+gene_avg_expr_17p13 <- diff_expr_avg |>
+    dplyr::group_by(lineage_group, Module, seqwgs_cp_17p13_call) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::filter(seqwgs_cp_17p13_call == "yes") |>
+    dplyr::mutate(factor = paste0("seqwgs_cp_17p13_call", "_", seqwgs_cp_17p13_call)) |>
+    dplyr::select(-seqwgs_cp_17p13_call)
+
+gene_avg_expr_1q21 <- diff_expr_avg |>
+    dplyr::group_by(lineage_group, Module, seqwgs_cp_1q21_call) |>
+    dplyr::summarise(mean = mean(Score)) |>
+    dplyr::filter(seqwgs_cp_1q21_call == "yes") |>
+    dplyr::mutate(factor = paste0("seqwgs_cp_1q21_call", "_", seqwgs_cp_1q21_call)) |>
+    dplyr::select(-seqwgs_cp_1q21_call)
+```
+
+```{r}
+all <- rbind(gene_avg_expr_davies, gene_avg_expr_nsd2, gene_avg_expr_maf, gene_avg_expr_17p13, gene_avg_expr_1q21)
+
+all <- all |>
+    dplyr::left_join(gene_pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (mean - mean_module) / sd(mean), min_max = 2 * ((mean - min(mean)) / max(mean - min(mean)) - 0.5))
+
+df_factor_names <- data.frame(
+    factor = c("seqwgs_cp_17p13_call_yes", "maf_combined_call_yes", "seqwgs_cp_1q21_call_yes", "nsd2_call_yes", "davies_based_risk_standard_risk", "davies_based_risk_high_risk"),
+    variable_names = c("Del 17p13", "MAF, MAFA, MAFB", "Gain 1q21", "NSD2 t(4;14)", "Standard Risk", "High Risk")
+)
+
+
+df_gene_groupings <- data.frame(
+    Module = c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "CD69", "CD44", "CD74", "PDCD1", "LAG3", "TOX", "TIGIT", "CTLA4", "FOXP3", "HLA-DPB1", "HLA-DRB1", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2"),
+    gene_grouping = c("IFN-1", "IFN-1", "IFN-1", "IFN-1", "Naive", "Naive", "Naive", "Activation", "Activation", "Activation", "Exhaustion", "Exhaustion", "Exhaustion", "Exhaustion", "T-Reg", "T-Reg", "MHC-II", "MHC-II", "Cytotoxicity", "Cytotoxicity", "Cytotoxicity", "Cytotoxicity", "Senescence", "Senescence", "Senescence")
+)
+
+gene_grouping_ordering <- unique(df_gene_groupings$gene_grouping)
+
+all <- dplyr::left_join(all, df_factor_names, by = "factor") |>
+    dplyr::left_join(df_gene_groupings, by = "Module") |>
+    dplyr::arrange(factor)
+all$variable_names <- factor(all$variable_names, levels = (unique(df_factor_names$variable_names)))
+
+all$factor <- factor(all$factor, levels = (unique(df_factor_names$factor)))
+all$Module <- factor(all$Module, levels = (unique(all$Module)))
+all$gene_grouping <- factor(all$gene_grouping, levels = (unique(gene_grouping_ordering)))
+
+
+
+
+all_filt <- all |> dplyr::filter(lineage_group %in% c("CD8"), Module %in% c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "PDCD1", "LAG3", "TOX", "TIGIT", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2", "CD69", "CD44", "CD74", "HLA-DPB1", "HLA-DRB1"))
+
+
+
+all_filt$Module <- factor(all_filt$Module, levels = c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "CD69", "CD44", "CD74", "PDCD1", "LAG3", "TOX", "TIGIT", "HLA-DPB1", "HLA-DRB1", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2"))
+
+
+
+all_filt <- all_filt |> dplyr::mutate(grouping = dplyr::case_when(
+    factor %in% c("davies_based_risk_high_risk", "davies_based_risk_standard_risk") ~ "Combined",
+    .default = "Individual"
+))
+
+p1 <- ggplot(all_filt, x = Module, y = variable_names, fill = z) +
+    geom_tile(aes(x = Module, y = variable_names, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    facet_grid(grouping ~ gene_grouping, space = "free", scales = "free") +
+    xlab("") +
+    ylab("") +
+    theme(
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+        panel.spacing.x = unit(0.25, "lines"),
+        strip.text.y = element_blank()
+    ) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    theme(legend.position = "bottom", legend.margin = margin(0, 0, 0, 0), legend.box.margin = margin(0, 0, 0, 0))
+
+pdf_and_png(p1, output_corr, "T_nk_plotb_gene", pdfWidth = W_FULL * 1.5, pdfHeight = H_FULL * .65, scale = 2.5)
+
+all_filt <- all |> dplyr::filter(lineage_group %in% c("CD4"), Module %in% c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "PDCD1", "LAG3", "TOX", "TIGIT", "CTLA4", "FOXP3", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2", "CD69", "CD44", "CD74"))
+
+all_filt$Module <- factor(all_filt$Module, levels = c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "CD69", "CD44", "CD74", "PDCD1", "LAG3", "TOX", "TIGIT", "CTLA4", "FOXP3", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2"))
+
+all_filt <- all_filt |> dplyr::mutate(grouping = dplyr::case_when(
+    factor %in% c("davies_based_risk_high_risk", "davies_based_risk_standard_risk") ~ "Combined",
+    .default = "Individual"
+))
+
+p2 <- ggplot(all_filt, x = Module, y = variable_names, fill = z) +
+    geom_tile(aes(x = Module, y = variable_names, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    facet_grid(grouping ~ gene_grouping, space = "free", scales = "free") +
+    xlab("") +
+    ylab("") +
+    theme(
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+        panel.spacing.x = unit(0.25, "lines"),
+        strip.text.y = element_blank()
+    ) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    theme(legend.position = "bottom", legend.margin = margin(0, 0, 0, 0), legend.box.margin = margin(0, 0, 0, 0))
+
+
+
+
+
+pdf_and_png(p2, output_corr, "T_nk_plotb_gene_cd4", pdfWidth = W_FULL * 1.5, pdfHeight = H_FULL * .65, scale = 2.5)
+
+combined <- patchwork::wrap_plots(list(p2, p1), ncol = 2)
+
+pdf_and_png(combined, output_corr, "cd4_cd8_combined", pdfWidth = W_FULL * 3, pdfHeight = H_FULL * .7, scale = 2.75)
+```
+
+```{r}
+all_filt <- all |> dplyr::filter(lineage_group %in% c("CD4"), Module %in% c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "PDCD1", "LAG3", "TOX", "TIGIT", "CTLA4", "FOXP3", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2", "CD69", "CD44", "CD74"))
+
+all_filt$Module <- factor(all_filt$Module, levels = c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "CD69", "CD44", "CD74", "PDCD1", "LAG3", "TOX", "TIGIT", "CTLA4", "FOXP3", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2"))
+
+all_filt <- all_filt |> dplyr::mutate(grouping = dplyr::case_when(
+    factor %in% c("davies_based_risk_high_risk", "davies_based_risk_standard_risk") ~ "Combined",
+    .default = "Individual"
+))
+
+p2 <- ggplot(all_filt, x = Module, y = factor, fill = z) +
+    geom_tile(aes(x = Module, y = factor, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    facet_grid(grouping ~ ., space = "free", scales = "free") +
+    xlab("") +
+    ylab("") +
+    theme(
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+    ) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+
+# all_filt <- all |> dplyr::filter(lineage_group %in% c("CD8"), Module %in% c("CCR7", "SELL", "TCF7", "PDCD1", "LAG3", "TOX", "TIGIT", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2", "CD69", "CD44", "CD74"))
+
+# all_filt$Module <- factor(all_filt$Module, levels = c("CCR7", "SELL", "TCF7", "CD69", "CD44", "CD74", "PDCD1", "LAG3", "TOX", "TIGIT", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2"))
+
+# p3 <- ggplot(all_filt |> dplyr::filter(factor %in% c("nsd2_call_yes", "seqwgs_cp_1q21_call_yes", "nsd2_1q21_multi_1Q", "nsd2_1q21_multi_NSD2", "nsd2_1q21_multi_NSD2_1Q", "nsd2_1q21_multi_None")), x = Module, y = factor, fill = z) +
+#     geom_tile(aes(x = Module, y = factor, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+#     scale_fill_gradient2(
+#         low = "#1d9ae3",
+#         high = "#f63575",
+#         limits = range(c(-3, 3)),
+#         oob = squish
+#     ) +
+#     facet_grid(~lineage_group, scales = "free_x", space = "free_x") +
+#     theme_prism() +
+#     xlab("") +
+#     ylab("") +
+#     theme(
+#         plot.margin = margin(
+#             14 / 2, 14 / 2,
+#             0, 14 / 2
+#         ),
+#     ) +
+#     # element_text(
+#     #     angle = 90,
+#     #     vjust = 0.5, hjust = 1,
+#     # )) +
+#     guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+pdf_and_png(p2, output_corr, "T_nk_plotb_gene_cd4", pdfWidth = 6, pdfHeight = 1.75, scale = 2)
+```
+
+
+```{r}
+all <- rbind(avg_expr_nsd2_1q)
+
+all <- all |>
+    dplyr::left_join(pat_mean, by = c("Module", "lineage_group")) |>
+    group_by(Module, lineage_group) |>
+    dplyr::mutate(z = (mean - mean_module) / sd(mean), min_max = 2 * ((mean - min(mean)) / max(mean - min(mean)) - 0.5))
+
+df_factor_names <- data.frame(
+    factor = c("nsd2_1q21_multi_1Q", "nsd2_1q21_multi_NA", "nsd2_1q21_multi_None", "nsd2_1q21_multi_NSD2", "nsd2_1q21_multi_NSD2_1Q", "nsd2_1q21_multi_MAF+1q21"),
+    variable_names = c("Gain 1q21", "NA", "Normal", "NSD2 Only", "NSD2+gain(1q21)", "MAF+gain(1q21)")
+)
+all <- dplyr::left_join(all, df_factor_names, by = "factor")
+all$variable_names <- factor(all$variable_names, levels = rev(c("NA", "Normal", "Gain 1q21", "NSD2 Only", "NSD2+gain(1q21)", "MAF+gain(1q21)")))
+all <- all |> dplyr::arrange(variable_names)
+all$factor <- factor(all$factor, levels = rev(unique(all$factor)))
+all$Module <- factor(all$Module, levels = (unique(all$Module)))
+
+all_filt <- all |> dplyr::filter(lineage_group %in% c("CD8"), Module %in% c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "PDCD1", "LAG3", "TOX", "TIGIT", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2", "CD69", "CD44", "CD74"))
+
+all_filt$Module <- factor(all_filt$Module, levels = c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "CD69", "CD44", "CD74", "PDCD1", "LAG3", "TOX", "TIGIT", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2"))
+
+all_filt <- all_filt |> dplyr::mutate(grouping = dplyr::case_when(
+    factor %in% c("davies_based_risk_high_risk", "davies_based_risk_standard_risk") ~ "Combined",
+    .default = "Individual"
+))
+
+p2 <- ggplot(all_filt, x = Module, y = variable_names, fill = z) +
+    geom_tile(aes(x = Module, y = variable_names, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    facet_grid(grouping ~ ., space = "free_y", scales = "free_y") +
+    xlab("") +
+    ylab("") +
+    theme(
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+    ) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+
+# pdf_and_png(p, output_corr, "NSD2_1q_IFN_plot_gene", pdfWidth = 6, pdfHeight = 1.75, scale = 2)
+# pdf_and_png(p2, output_corr, "NSD2_1q_effect_T_nk_plotb_gene", pdfWidth = 6, pdfHeight = 1.75, scale = 2)
+
+all_filt <- all |> dplyr::filter(lineage_group %in% c("CD4"), Module %in% c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "PDCD1", "LAG3", "TOX", "TIGIT", "CTLA4", "FOXP3", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2", "CD69", "CD44", "CD74"))
+
+all_filt$Module <- factor(all_filt$Module, levels = c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "CD69", "CD44", "CD74", "PDCD1", "LAG3", "TOX", "TIGIT", "CTLA4", "FOXP3", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2"))
+
+all_filt <- all_filt |> dplyr::mutate(grouping = dplyr::case_when(
+    factor %in% c("davies_based_risk_high_risk", "davies_based_risk_standard_risk") ~ "Combined",
+    .default = "Individual"
+))
+
+p3 <- ggplot(all_filt, x = Module, y = variable_names, fill = z) +
+    geom_tile(aes(x = Module, y = variable_names, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    facet_grid(grouping ~ ., space = "free_y", scales = "free_y") +
+    xlab("") +
+    ylab("") +
+    theme(
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+    ) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+
+
+
+# pdf_and_png(p2, output_corr, "T_nk_plotb_gene_cd4", pdfWidth = 6, pdfHeight = 1.75, scale = 2)
+# pdf_and_png(p3, output_corr, "T_nk_plotc", pdfWidth = 5, pdfHeight = 2.7, scale = 3)
+```
+
+```{r}
+all_filt <- all |> dplyr::filter(lineage_group %in% c("CD4"), Module %in% c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "PDCD1", "LAG3", "TOX", "TIGIT", "CTLA4", "FOXP3", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2", "CD69", "CD44", "CD74"))
+
+all_filt$Module <- factor(all_filt$Module, levels = c("ISG15", "IFI44L", "MX1", "IFI27", "CCR7", "SELL", "TCF7", "CD69", "CD44", "CD74", "PDCD1", "LAG3", "TOX", "TIGIT", "CTLA4", "FOXP3", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2"))
+
+all_filt <- all_filt |> dplyr::mutate(grouping = dplyr::case_when(
+    factor %in% c("davies_based_risk_high_risk", "davies_based_risk_standard_risk") ~ "Combined",
+    .default = "Individual"
+))
+
+p2 <- ggplot(all_filt, x = Module, y = factor, fill = z) +
+    geom_tile(aes(x = Module, y = factor, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    theme_prism() +
+    facet_grid(grouping ~ ., space = "free_y", scales = "free_y") +
+    xlab("") +
+    ylab("") +
+    theme(
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+    ) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+
+# all_filt <- all |> dplyr::filter(lineage_group %in% c("CD8"), Module %in% c("CCR7", "SELL", "TCF7", "PDCD1", "LAG3", "TOX", "TIGIT", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2", "CD69", "CD44", "CD74"))
+
+# all_filt$Module <- factor(all_filt$Module, levels = c("CCR7", "SELL", "TCF7", "CD69", "CD44", "CD74", "PDCD1", "LAG3", "TOX", "TIGIT", "FGFBP2", "GNLY", "PRF1", "GZMH", "B3GAT1", "KLRG1", "ZEB2"))
+
+# p3 <- ggplot(all_filt |> dplyr::filter(factor %in% c("nsd2_call_yes", "seqwgs_cp_1q21_call_yes", "nsd2_1q21_multi_1Q", "nsd2_1q21_multi_NSD2", "nsd2_1q21_multi_NSD2_1Q", "nsd2_1q21_multi_None")), x = Module, y = factor, fill = z) +
+#     geom_tile(aes(x = Module, y = factor, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+#     scale_fill_gradient2(
+#         low = "#1d9ae3",
+#         high = "#f63575",
+#         limits = range(c(-3, 3)),
+#         oob = squish
+#     ) +
+#     facet_grid(~lineage_group, scales = "free_x", space = "free_x") +
+#     theme_prism() +
+#     xlab("") +
+#     ylab("") +
+#     theme(
+#         plot.margin = margin(
+#             14 / 2, 14 / 2,
+#             0, 14 / 2
+#         ),
+#     ) +
+#     # element_text(
+#     #     angle = 90,
+#     #     vjust = 0.5, hjust = 1,
+#     # )) +
+#     guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+pdf_and_png(p2, output_corr, "T_nk_plotb_gene_cd4", pdfWidth = 6, pdfHeight = 1.75, scale = 2)
+```
+
+
+
+More data frame manipulation
+```{r}
+diff_abun_df$subcluster_V03072023 <- factor(diff_abun_df$subcluster_V03072023)
+
+
+diff_abun_df$Comparison <- factor(diff_abun_df$Comparison, levels = rev(c("HR_v_SR", "RP_v_NP", "RP.SR_v_NP.SR", "RP.HR_v_NP.HR", "RP.T_v_NP.T", "RP.D_v_NP.D")))
+LG$diff_abun_df$Comparison <- factor(LG$diff_abun_df$Comparison, levels = rev(c("HR_v_SR", "RP_v_NP", "RP.SR_v_NP.SR", "RP.HR_v_NP.HR", "RP.T_v_NP.T", "RP.D_v_NP.D")))
+
+diff_expr <- dplyr::left_join(diff_expr, cluster_info)
+diff_expr$subcluster_V03072023 <- factor(diff_expr$subcluster_V03072023, levels = cluster_ordering)
+diff_expr <- diff_expr |> arrange(subcluster_V03072023)
+diff_expr$cellID_short <- factor(diff_expr$cellID_short, levels = unique(diff_expr$cellID_short))
+
+if (GROUPING_MODE == "SUPERCLUST") {
+    superclust_df <- data.frame(subcluster_V03072023 = names(superclust_noplasma), superclust = superclust_noplasma)
+} else if (GROUPING_MODE == "LINEAGE") {
+    superclust_df <- data.frame(subcluster_V03072023 = clust_info$subcluster_V03072023, superclust = clust_info$lineage_group)
+}
+diff_abun_df <- dplyr::left_join(diff_abun_df, superclust_df)
+diff_expr <- dplyr::left_join(diff_expr, superclust_df)
+```
+
+```{r}
+diff_abun_df <- diff_abun_df |> dplyr::filter(lineage_group != "E")
+diff_abun_df_all <- diff_abun_df
+```
+
+# Figure 5A and Supplemental Figure 12: Risk, Progression, Standard Risk Progression Comparison
+```{r}
+if (GROUPING_MODE == "LINEAGE") {
+    cluster_info <- cluster_info |> arrange(lineage_group, lineage_order)
+    diff_abun_df$cellID_short <- factor(diff_abun_df$cellID_short, levels = cluster_info$cellID_short)
+    diff_expr$cellID_short <- factor(diff_expr$cellID_short, levels = cluster_info$cellID_short)
+}
+
+
+diff_abun_df <- diff_abun_df |> dplyr::filter(Comparison %in% c("HR_v_SR", "RP_v_NP", "RP.SR_v_NP.SR")) # , "RP.HR_v_NP.HR", "RP.HR_v_NP.SR", "RP.SR_v_NP.HR"))
+LG$diff_abun_df <- LG$diff_abun_df |> dplyr::filter(Comparison %in% c("HR_v_SR", "RP_v_NP", "RP.SR_v_NP.SR")) # , "RP.HR_v_NP.HR", "RP.HR_v_NP.SR", "RP.SR_v_NP.HR"))
+
+diff_expr <- diff_expr |> dplyr::filter(lineage_group != "E")
+
+LG$p <- ggplot(LG$diff_abun_df) +
+    geom_tile(aes(x = lineage_group, y = Comparison, fill = logFC), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = fill_NP, # "#1d9ae3",
+        high = fill_RP, # "#f63575"
+        limits = c(-1.5, 1.5),
+        oob = squish
+    ) +
+    theme_prism() +
+    xlab("") +
+    ylab("") +
+    theme(axis.text.x = element_text(
+        angle = 90,
+        vjust = 0.5,
+        hjust = 1
+    )) +
+    coord_fixed() +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+
+p <- ggplot(diff_abun_df) +
+    geom_tile(aes(x = cellID_short, y = Comparison, fill = logFC), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = fill_NP, # "#1d9ae3",
+        high = fill_RP, # "#f63575"
+        limits = range(c(-1, 1)),
+        oob = squish
+    ) +
+    theme_prism() +
+    xlab("") +
+    ylab("") +
+    theme(axis.text.x = element_blank()) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white"))) +
+    facet_grid(~superclust, scales = "free_x", space = "free_x")
+
+pdf_and_png(p, output_corr, paste0("test", str_mod), pdfWidth = 8.5, pdfHeight = 1.6, scale = 2)
+
+diff_abun_prog <- diff_abun_df |> dplyr::filter(Comparison %in% c("RP_v_NP", "RP.SR_v_NP.SR"))
+
+diff_abun_prog <- diff_abun_prog |> spread(Comparison, logFC)
+
+diff_abun_prog <- diff_abun_prog |> dplyr::mutate(direction = dplyr::case_when(
+    RP.SR_v_NP.SR > 0 & RP_v_NP > 0 ~ "RP Enriched Consistent",
+    RP.SR_v_NP.SR < 0 & RP_v_NP < 0 ~ "NP Enriched Consistent",
+    RP.SR_v_NP.SR > 0 & RP_v_NP < 0 ~ "NP Overall, RP Standard",
+    RP.SR_v_NP.SR < 0 & RP_v_NP > 0 ~ "NP Standard, RP Overall",
+    RP.SR_v_NP.SR == 0 & RP_v_NP > 0 ~ "RP Overall, NC Standard",
+    RP.SR_v_NP.SR == 0 & RP_v_NP < 0 ~ "NP Overall, NC Standard",
+    RP.SR_v_NP.SR > 0 & RP_v_NP == 0 ~ "RP Standard, NC Overall",
+    RP.SR_v_NP.SR < 0 & RP_v_NP == 0 ~ "NP Standard, NC Overall",
+    RP.SR_v_NP.SR == 0 & RP_v_NP == 0 ~ "NC",
+    .default = "UNKNOWN CASE"
+))
+
+p_scatter <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = RP.SR_v_NP.SR, y = RP_v_NP, fill = direction, color = direction)) +
+    geom_label_repel(aes(x = RP.SR_v_NP.SR, y = RP_v_NP, label = cellID_short, fill = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Adjusted Log2FC") +
+    ylab("RP v NP Adjusted Log2FC") +
+    coord_fixed()
+
+pdf_and_png(p_scatter, output_corr, paste0("SR_v_overall_scatter", str_mod), pdfWidth = 6, pdfHeight = 4, scale = 3)
+
+p_scatter_nolabel <- ggplot(diff_abun_prog, aes(x = RP.SR_v_NP.SR, y = RP_v_NP)) +
+    geom_smooth(method = "lm", formula = y ~ x, color = "darkgrey") +
+    geom_abline(slope = 1, intercept = 0, color = "grey") +
+    geom_point(aes(fill = direction, color = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Adjusted Log2FC") +
+    ylab("RP v NP Adjusted Log2FC") +
+    coord_fixed() +
+    NoLegend()
+
+pdf_and_png(p_scatter_nolabel, output_corr, paste0("SR_v_overall_scatter_nolabel", str_mod), pdfWidth = 1.5, pdfHeight = 1, scale = 3)
+
+
+diff_abun_prog <- diff_abun_df_all |> dplyr::filter(Comparison %in% c("RP.HR_v_NP.HR", "RP.SR_v_NP.SR"))
+
+diff_abun_prog <- diff_abun_prog |> spread(Comparison, logFC)
+
+diff_abun_prog <- diff_abun_prog |> dplyr::mutate(direction = dplyr::case_when(
+    RP.SR_v_NP.SR > 0 & RP.HR_v_NP.HR > 0 ~ "RP Enriched Consistent",
+    RP.SR_v_NP.SR < 0 & RP.HR_v_NP.HR < 0 ~ "NP Enriched Consistent",
+    RP.SR_v_NP.SR > 0 & RP.HR_v_NP.HR < 0 ~ "NP Overall, RP Standard",
+    RP.SR_v_NP.SR < 0 & RP.HR_v_NP.HR > 0 ~ "NP Standard, RP Overall",
+    RP.SR_v_NP.SR == 0 & RP.HR_v_NP.HR > 0 ~ "RP Overall, NC Standard",
+    RP.SR_v_NP.SR == 0 & RP.HR_v_NP.HR < 0 ~ "NP Overall, NC Standard",
+    RP.SR_v_NP.SR > 0 & RP.HR_v_NP.HR == 0 ~ "RP Standard, NC Overall",
+    RP.SR_v_NP.SR < 0 & RP.HR_v_NP.HR == 0 ~ "NP Standard, NC Overall",
+    RP.SR_v_NP.SR == 0 & RP.HR_v_NP.HR == 0 ~ "NC",
+    .default = "UNKNOWN CASE"
+))
+
+p_scatter <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = RP.SR_v_NP.SR, y = RP.HR_v_NP.HR, fill = direction, color = direction)) +
+    geom_label_repel(aes(x = RP.SR_v_NP.SR, y = RP.HR_v_NP.HR, label = cellID_short, fill = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Adjusted Log2FC") +
+    ylab("RP-HR v NP-HR Adjusted Log2FC") +
+    xlim(c(-1.5, 1.5)) +
+    ylim(c(-1.5, 1.5))
+
+pdf_and_png(p_scatter, output_corr, paste0("progression_SR_v_HR_scatter", str_mod), pdfWidth = 6, pdfHeight = 4, scale = 3)
+
+
+p_scatter_nolabel <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = RP.SR_v_NP.SR, y = RP.HR_v_NP.HR, fill = direction, color = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Adjusted Log2FC") +
+    ylab("RP v NP Adjusted Log2FC") +
+    xlim(c(-1.5, 1.5)) +
+    ylim(c(-1.5, 1.5))
+
+pdf_and_png(p_scatter_nolabel, output_corr, paste0("progression_SR_v_HR_scatter_nolabel", str_mod), pdfWidth = 3, pdfHeight = 2, scale = 3)
+
+diff_abun_prog <- diff_abun_df_all |> dplyr::filter(Comparison %in% c("RP_v_NP", "HR_v_SR"))
+
+diff_abun_prog <- diff_abun_prog |> spread(Comparison, logFC)
+
+diff_abun_prog <- diff_abun_prog |> dplyr::mutate(direction = dplyr::case_when(
+    HR_v_SR > 0 & RP_v_NP > 0 ~ "HR, RP",
+    HR_v_SR < 0 & RP_v_NP < 0 ~ "SR, NP",
+    HR_v_SR > 0 & RP_v_NP < 0 ~ "HR, NP",
+    HR_v_SR < 0 & RP_v_NP > 0 ~ "SR, RP",
+    HR_v_SR == 0 & RP_v_NP > 0 ~ "RP",
+    HR_v_SR == 0 & RP_v_NP < 0 ~ "NP",
+    HR_v_SR > 0 & RP_v_NP == 0 ~ "HR",
+    HR_v_SR < 0 & RP_v_NP == 0 ~ "SR",
+    HR_v_SR == 0 & RP_v_NP == 0 ~ "NC",
+    .default = "UNKNOWN CASE"
+))
+
+p_scatter <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = HR_v_SR, y = RP_v_NP, fill = direction, color = direction)) +
+    geom_label_repel(aes(x = HR_v_SR, y = RP_v_NP, label = cellID_short, fill = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Adjusted Log2FC") +
+    ylab("RP v NP Adjusted Log2FC") +
+    xlim(c(-1.5, 1.5)) +
+    ylim(c(-1.5, 1.5))
+
+pdf_and_png(p_scatter, output_corr, paste0("risk_vs_prog_scatter", str_mod), pdfWidth = 6, pdfHeight = 4, scale = 3)
+
+p_scatter_nolabel <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = HR_v_SR, y = RP_v_NP, fill = direction, color = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-SR v NP-SR Log-Odds") +
+    ylab("RP v NP Log-Odds") +
+    xlim(c(-1.5, 1.5)) +
+    ylim(c(-1.5, 1.5))
+
+pdf_and_png(p_scatter_nolabel, output_corr, paste0("risk_vs_prog_scatter_nolabel", str_mod), pdfWidth = 3, pdfHeight = 2, scale = 3)
+
+
+
+diff_expr_test <- diff_expr |>
+    group_by(Module) |>
+    dplyr::mutate(mean_module = mean(Score), var_module = var(Score), z = (Score - mean_module) / sd(Score), min_max = 2 * ((Score - min(Score)) / max(Score - min(Score)) - 0.5))
+
+if (GROUPING_MODE == "LINEAGE") {
+    diff_expr_test$cellID_short <- factor(diff_expr_test$cellID_short, levels = cluster_info$cellID_short)
+}
+
+diff_expr_test$Module <- factor(diff_expr_test$Module, levels = c(
+    "NaiveT",
+    "CytotoxicT",
+    "ExhaustedT",
+    "DysfunctionalT",
+    "SASP",
+    "IFN",
+    "HLA"
+))
+
+p2 <- ggplot(diff_expr_test) +
+    geom_tile(aes(x = cellID_short, y = Module, fill = z), color = "black", lwd = 0.6, linetype = 1) +
+    scale_fill_gradient2(
+        low = "#1d9ae3",
+        high = "#f63575",
+        limits = range(c(-3, 3)),
+        oob = squish
+    ) +
+    facet_grid(~superclust, scales = "free_x", space = "free_x") +
+    theme_prism() +
+    xlab("") +
+    ylab("") +
+    theme(
+        axis.text.x = element_blank(),
+        plot.margin = margin(
+            14 / 2, 14 / 2,
+            0, 14 / 2
+        ),
+    ) +
+    # element_text(
+    #     angle = 90,
+    #     vjust = 0.5, hjust = 1,
+    # )) +
+    guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+blank_df <- diff_abun_df |> dplyr::distinct(cellID_short, superclust)
+colours <- deframe(ggprism::ggprism_data$themes[["black_and_white"]])
+
+blank_test <- ggplot(blank_df, aes(x = cellID_short)) +
+    facet_grid(~superclust, scales = "free_x", space = "free_x") +
+    geom_blank() +
+    theme_void() +
+    theme(
+        axis.text.x = element_text(
+            size = 14 * 0.95, colour = colours["axisLabelColor"],
+            family = "sans", face = "bold",
+            margin = margin(t = 0.8 * 14 / 4),
+            angle = 90,
+            vjust = 0.5,
+            hjust = 1,
+        ),
+        axis.text.x.top = element_text(margin = margin(b = 0.8 * 14 / 4), vjust = 0),
+        strip.background = element_blank(),
+        strip.background.x = element_blank(),
+        strip.background.y = element_blank(),
+        strip.text = element_blank(),
+        strip.text.x = element_blank(),
+        strip.text.x.bottom = element_blank(),
+        strip.text.x.top = element_blank(),
+        strip.text.y = element_blank(),
+        strip.text.y.left = element_blank(),
+        strip.text.y.right = element_blank(),
+        plot.margin = margin(
+            0, 14 / 2,
+            0, 14 / 2
+        ),
+    )
+
+p_comb <- p / p2 + plot_layout(axes = "collect_x", widths = c(6, 6), heights = c(5, 5))
+LG$p_comb <- LG$p / LG$p + plot_layout(axes = "collect_x", widths = c(6, 6), heights = c(5, 5))
+
+TEST_ALL <- patchwork::wrap_plots(list(LG$p, p, patchwork::plot_spacer(), patchwork::plot_spacer(), patchwork::plot_spacer(), p2, patchwork::plot_spacer(), patchwork::plot_spacer(), patchwork::plot_spacer(), blank_test),
+    ncol = 2, nrow = 5, widths = c(length(LG$cluster_ordering), length(cluster_ordering)),
+    heights = c(5 * 3 / 5, -2, 11 * 3 / 5, -1.25, 0)
+) # + plot_layout(widths = c(1, 6), ncol = 2)
+
+TEST_ALL <- patchwork::wrap_plots(list(p, patchwork::plot_spacer(), p2, patchwork::plot_spacer(), blank_test),
+    ncol = 1, nrow = 5, widths = c(length(cluster_ordering)),
+    heights = c(5 * 3 / 5, -2, 11 * 3 / 5, -1.25, 0)
+) # + plot_layout(widths = c(1, 6), ncol = 2)
+pdf_and_png(p_comb, output_corr, paste0("test_combined", str_mod), pdfWidth = 10, pdfHeight = 3.2, scale = 3)
+pdf_and_png(TEST_ALL, output_corr, paste0("test_combined_with_lingroup_", str_mod), pdfWidth = 10, pdfHeight = 3.2, scale = 2.5)
+
+TEST_NO_SUBPANEL <- patchwork::wrap_plots(list(p, patchwork::plot_spacer(), p2, patchwork::plot_spacer(), blank_test),
+    ncol = 1, nrow = 5, widths = c(length(cluster_ordering)),
+    heights = c(5 * 3 / 5, -1.2, 11 * 3 / 5, -1.25, 0)
+)
+pdf_and_png(TEST_NO_SUBPANEL, output_corr, paste0("NO_SUBPANEL_test_combined_with_lingroup_", str_mod), pdfWidth = 8, pdfHeight = 2.8, scale = 2.5)
+
+pdf_and_png(LG$p, output_corr, paste0("LINEAGE_GROUP_PANEL_", str_mod), pdfWidth = 4, pdfHeight = 2.5, scale = 3)
+# + plot_layout(widths = c(1, 6), ncol = 2)
+# p <- ggplot(diff_abun_df |> dplyr::filter(lineage_group != "Plasma")) +
+#     geom_tile(aes(x = cellID_short, y = Comparison, fill = logFC)) +
+#     scale_fill_gradient2(
+#         low = fill_NP,
+#         # "#409fd5",
+#         mid = "white",
+#         high = "#e65a88"
+#     ) +
+#     xlab("") +
+#     ylab("") +
+#     theme(axis.text.x = element_text(
+#         angle = 90,
+#         vjust = 0.5, hjust = 1,
+#     )) +
+#     guides(size = guide_legend(override.aes = list(shape = 21, colour = "grey", fill = "white")))
+
+# pdf_and_png(p, output_corr, "test_condensed", pdfWidth = 8.5, pdfHeight = 1.6, scale = 2)
+```
+
+# Supplemental Figure 11 - Scatter plot for Triplet vs Overall 
+
+```{r}
+diff_abun_prog <- diff_abun_df_all |> dplyr::filter(Comparison %in% c("RP_v_NP", "RP.T_v_NP.T"))
+
+diff_abun_prog <- diff_abun_prog |> spread(Comparison, logFC)
+
+diff_abun_prog <- diff_abun_prog |> dplyr::mutate(direction = dplyr::case_when(
+    RP.T_v_NP.T > 0 & RP_v_NP > 0 ~ "RP Enriched Consistent",
+    RP.T_v_NP.T < 0 & RP_v_NP < 0 ~ "NP Enriched Consistent",
+    RP.T_v_NP.T > 0 & RP_v_NP < 0 ~ "NP Overall, RP Triplet",
+    RP.T_v_NP.T < 0 & RP_v_NP > 0 ~ "NP Triplet, RP Overall",
+    RP.T_v_NP.T == 0 & RP_v_NP > 0 ~ "RP Overall, NC Triplet",
+    RP.T_v_NP.T == 0 & RP_v_NP < 0 ~ "NP Overall, NC Triplet",
+    RP.T_v_NP.T > 0 & RP_v_NP == 0 ~ "RP Triplet, NC Overall",
+    RP.T_v_NP.T < 0 & RP_v_NP == 0 ~ "NP Triplet, NC Overall",
+    RP.T_v_NP.T == 0 & RP_v_NP == 0 ~ "NC",
+    .default = "UNKNOWN CASE"
+))
+
+p_scatter <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = RP.T_v_NP.T, y = RP_v_NP, fill = direction, color = direction)) +
+    geom_label_repel(aes(x = RP.T_v_NP.T, y = RP_v_NP, label = cellID_short, fill = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-T v NP-T Adjusted Log2FC") +
+    ylab("RP v NP Adjusted Log2FC") +
+    xlim(c(-1, 1)) +
+    ylim(c(-1, 1))
+
+pdf_and_png(p_scatter, output_corr, "Triplet_v_overall_scatter", pdfWidth = 6, pdfHeight = 4, scale = 3)
+
+diff_abun_prog <- diff_abun_df_all |> dplyr::filter(Comparison %in% c("RP.D_v_NP.D", "RP.T_v_NP.T"))
+
+diff_abun_prog <- diff_abun_prog |> spread(Comparison, logFC)
+
+diff_abun_prog <- diff_abun_prog |> dplyr::mutate(direction = dplyr::case_when(
+    RP.T_v_NP.T > 0 & RP.D_v_NP.D > 0 ~ "RP Enriched Consistent",
+    RP.T_v_NP.T < 0 & RP.D_v_NP.D < 0 ~ "NP Enriched Consistent",
+    RP.T_v_NP.T > 0 & RP.D_v_NP.D < 0 ~ "NP Doublet, RP Triplet",
+    RP.T_v_NP.T < 0 & RP.D_v_NP.D > 0 ~ "NP Triplet, RP Doublet",
+    RP.T_v_NP.T == 0 & RP.D_v_NP.D > 0 ~ "RP Doublet, NC Triplet",
+    RP.T_v_NP.T == 0 & RP.D_v_NP.D < 0 ~ "NP Doublet, NC Triplet",
+    RP.T_v_NP.T > 0 & RP.D_v_NP.D == 0 ~ "RP Triplet, NC Doublet",
+    RP.T_v_NP.T < 0 & RP.D_v_NP.D == 0 ~ "NP Triplet, NC Doublet",
+    RP.T_v_NP.T == 0 & RP.D_v_NP.D == 0 ~ "NC",
+    .default = "UNKNOWN CASE"
+))
+
+p_scatter <- ggplot(diff_abun_prog) +
+    geom_point(aes(x = RP.T_v_NP.T, y = RP.D_v_NP.D, fill = direction, color = direction)) +
+    geom_label_repel(aes(x = RP.T_v_NP.T, y = RP.D_v_NP.D, label = cellID_short, fill = direction)) +
+    geom_vline(xintercept = 0, color = "black", size = 1) +
+    geom_hline(yintercept = 0, color = "black", size = 1) +
+    theme_prism() +
+    xlab("RP-T v NP-T Adjusted Log2FC") +
+    ylab("RP-D v NP-D Adjusted Log2FC") +
+    xlim(c(-1.5, 1.5)) +
+    ylim(c(-1.5, 1.5))
+
+pdf_and_png(p_scatter, output_corr, "Triplet_v_doublet_scatter", pdfWidth = 6, pdfHeight = 4, scale = 3)
+```
+
+```{r}
+# baseline_noplasma@meta.data <- dplyr::left_join(baseline_noplasma@meta.data, superclust_df)
+# rownames(baseline_noplasma@meta.data) <- baseline_noplasma@meta.data$cellname
+
+# test <- markers_and_heatmap(baseline_noplasma, output = output_corr, nameMod = "superclust", findMarkersVariable = "superclust", displayVariable = "superclust")
+```
+
+```{r}
+
+```
+
+
+```{r}
+p1 <- md_bl |>
+    dplyr::filter(davies_based_risk %in% c("high_risk", "standard_risk")) |>
+    ggplot(aes(x = davies_based_risk, y = PROLIF_INDEX, fill = davies_based_risk, color = davies_based_risk)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+p2 <- md_bl |>
+    dplyr::filter(davies_based_risk %in% c("high_risk", "standard_risk")) |>
+    ggplot(aes(x = davies_based_risk, y = D_IM_FLOWCYT_PCT_PC_IN_BM_HIGH, fill = davies_based_risk, color = davies_based_risk)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+```
+
+```{r}
+p1 <- md_bl |>
+    ggplot(aes(x = nsd2_call, y = PROLIF_INDEX, fill = nsd2_call, color = nsd2_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+p2 <- md_bl |>
+    ggplot(aes(x = nsd2_call, y = D_IM_FLOWCYT_PCT_PC_IN_BM_HIGH, fill = nsd2_call, color = nsd2_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+```
+
+```{r}
+p1 <- md_bl |>
+    ggplot(aes(x = IMWG_FLAG_NSD2_AND_1Q21, y = PROLIF_INDEX, fill = IMWG_FLAG_NSD2_AND_1Q21, color = IMWG_FLAG_NSD2_AND_1Q21)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+p2 <- md_bl |>
+    ggplot(aes(x = IMWG_FLAG_NSD2_AND_1Q21, y = D_IM_FLOWCYT_PCT_PC_IN_BM_HIGH, fill = IMWG_FLAG_NSD2_AND_1Q21, color = IMWG_FLAG_NSD2_AND_1Q21)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+```
+
+
+```{r}
+p1 <- md_bl |>
+    ggplot(aes(x = seqwgs_cp_17p13_call, y = PROLIF_INDEX, fill = seqwgs_cp_17p13_call, color = seqwgs_cp_17p13_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+p2 <- md_bl |>
+    ggplot(aes(x = seqwgs_cp_17p13_call, y = D_IM_FLOWCYT_PCT_PC_IN_BM_HIGH, fill = seqwgs_cp_17p13_call, color = seqwgs_cp_17p13_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+```
+
+```{r}
+p1 <- md_bl |>
+    ggplot(aes(x = maf_combined_call, y = PROLIF_INDEX, fill = maf_combined_call, color = maf_combined_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+p2 <- md_bl |>
+    ggplot(aes(x = maf_combined_call, y = D_IM_FLOWCYT_PCT_PC_IN_BM_HIGH, fill = maf_combined_call, color = maf_combined_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+```
+
+```{r}
+p1 <- md_bl |>
+    ggplot(aes(x = seqwgs_cp_1q21_call, y = PROLIF_INDEX, fill = seqwgs_cp_1q21_call, color = seqwgs_cp_1q21_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+p2 <- md_bl |>
+    ggplot(aes(x = seqwgs_cp_1q21_call, y = D_IM_FLOWCYT_PCT_PC_IN_BM_HIGH, fill = seqwgs_cp_1q21_call, color = seqwgs_cp_1q21_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+```
+
+```{r}
+maf_test <- diff_expr_avg |> dplyr::filter(lineage_group == "CD8", maf_combined_call %in% c("yes", "no"), Module == "LAG3")
+
+p_maf_exh <- maf_test |>
+    ggplot(aes(x = maf_combined_call, y = Expression, fill = maf_combined_call, color = maf_combined_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+maf_test <- diff_expr |> dplyr::filter(lineage_group == "CD8", maf_combined_call %in% c("yes", "no"), Module == "PDCD1")
+
+p_maf_exh_2 <- maf_test |>
+    ggplot(aes(x = maf_combined_call, y = Expression, fill = maf_combined_call, color = maf_combined_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+maf_test <- diff_expr |> dplyr::filter(lineage_group == "CD8", maf_combined_call %in% c("yes", "no"), Module == "TIGIT")
+
+p_maf_exh_3 <- maf_test |>
+    ggplot(aes(x = maf_combined_call, y = Expression, fill = maf_combined_call, color = maf_combined_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+
+maf_test <- diff_expr |> dplyr::filter(lineage_group == "CD8", maf_combined_call %in% c("yes", "no"), Module == "TOX")
+
+p_maf_exh_4 <- maf_test |>
+    ggplot(aes(x = maf_combined_call, y = Expression, fill = maf_combined_call, color = maf_combined_call)) +
+    geom_violin(alpha = 0.5) +
+    ggbeeswarm::geom_quasirandom(alpha = 0.2) +
+    geom_boxplot(width = 0.4, alpha = 0.5)
+```
+
+```{r}
+maf_test <- diff_expr_avg |> dplyr::filter(lineage_group == "CD8", maf_combined_call %in% c("yes", "no"), Module == "LAG3")
+
+ggbar <- ggbetweenstats(maf_test, x = maf_combined_call, y = Expression, type = "robust")
+
+pdf_and_png(ggbar, output_corr, "LAG3_MAF_CD8", pdfWidth = 4, pdfHeight = 4, scale = 2.5)
+```
+
+```{r}
+maf_test <- diff_expr |> dplyr::filter(lineage_group == "CD8", maf_combined_call %in% c("yes", "no"), Module == "TIGIT")
+
+ggbar <- ggbetweenstats(maf_test, x = maf_combined_call, y = Expression, type = "robust")
+```
+
+```{r}
+maf_test <- md_bl
+
+ggbar <- ggbetweenstats(maf_test, x = maf_combined_call, y = d_dx_amm_age, type = "robust")
+```

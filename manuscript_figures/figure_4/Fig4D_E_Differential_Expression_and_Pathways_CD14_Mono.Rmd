@@ -9,6 +9,7 @@ output:
 ---
 
 Generates both the Volcano plot seen in Figure 4D (Myeloid CD14+ Mono Diff Expression) and the Pathway Analysis in Figure 4E (Myeloid CD14+ Mono Pathways)
+Revisions: ISG15 renamed to IFN1
 
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(
@@ -55,7 +56,27 @@ geneList <- c("CXCL8", "IL1B", "CCL5", "CCL3", "CCL4", "MMP1", "MMP3", "CCL2", "
 # Volcano plot code (or heatmap)
 
 
-ISG15_lab <- c("IFI6", "IFIT3", "IFI44L", "MX1", "OAS1", "ISG15")
+ISG15_lab <- c(
+    "IFI44L",
+    "ISG15",
+    "XAF1",
+    "IFI6",
+    "MX1",
+    "LY6E",
+    "EIF2AK2",
+    "STAT1",
+    "MX2",
+    "IFIT3",
+    "ISG20",
+    "OAS1",
+    "IFI44",
+    "IRF7",
+    "IFIT1",
+    "OAS3",
+    "IFI35",
+    "OAS2",
+    "IFI27"
+)
 SASP_lab <- c("CXCL8", "IL1B", "CCL5", "CCL3", "CCL4", "MMP1", "MMP3", "CCL2", "CCL8", "TGFB1", "IL6", "CXCL1")
 STRESS <- c("FKBP5", "TSC22D3", "KLF6", "TXNIP")
 
@@ -79,7 +100,7 @@ keyvals.alpha <- ifelse(
 keyvals.color[is.na(keyvals.color)] <- "grey"
 names(keyvals.color)[keyvals.color == "grey"] <- "Other"
 names(keyvals.color)[keyvals.color == colors_volcano[[1]]] <- "Inflammatory"
-names(keyvals.color)[keyvals.color == colors_volcano[[4]]] <- "ISG15"
+names(keyvals.color)[keyvals.color == colors_volcano[[4]]] <- "IFN1"
 names(keyvals.color)[keyvals.color == colors_volcano[[2]]] <- "Stress"
 
 selectLab <- rownames(forVolcano |> dplyr::filter(adj.P.Val < 10e-40 & abs(logFC) > 0.1))
@@ -188,8 +209,8 @@ write.csv(cd8_gsea, file.path(output_volcano, "cd14_mono_reactome.csv"))
 filt <- cd8_gsea |> dplyr::filter(p.adjust < 0.1)
 
 write.csv(symbols, file.path(output_volcano, "gene2id.csv"))
-results <- filt@result
-results <- cd8_gsea@result |> arrange(NES)
+results <- filt@result |> arrange(NES)
+# results <- cd8_gsea@result |> arrange(NES)
 results$Description_wrap <- stringr::str_wrap(results$Description, width = 45)
 
 results$Description_wrap <- factor(results$Description_wrap, levels = results$Description_wrap)

@@ -9,6 +9,7 @@ output:
 ---
 
 This is the script which generates the stacked bar chart figure 4a. The script also generates similar charts for other clusters
+Revisions: No changes
 
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(

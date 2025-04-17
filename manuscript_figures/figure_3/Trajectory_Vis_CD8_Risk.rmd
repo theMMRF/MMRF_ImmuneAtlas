@@ -8,8 +8,7 @@ output:
         toc_float: true
 ---
 
-Renders visuals for the Myeloid trajectory figure in Figure 4
-Revisions: Improved plot readability
+Renders visuals for the CD8+ Trajectory Analysis in Figure 4 (4I, 4J, 4K)
 
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(
@@ -20,9 +19,9 @@ knitr::opts_chunk$set(
 
 # Setup - Load Trajectory Object
 ```{r init}
-source("source/Figure_3/Fig3_standard_load_data.R", local = T)
+source("source/Validation/validation_load_data.R", local = T)
 
-cd8_seurat <- merged |> subset(subcluster_V03072023_compartment == "Myeloid")
+cd8_seurat <- merged |> subset(lineage_group == "CD8")
 
 per_cell_cluster_info <- cd8_seurat@meta.data |> dplyr::select(subcluster_V03072023, cellname, color_sub, primary_id_color, color, cellID_short)
 
@@ -33,10 +32,10 @@ colnames(cluster_size) <- c("Cluster", "Cell Count")
 
 per_cluster_info <- cd8_seurat@meta.data |> dplyr::distinct(subcluster_V03072023, color_sub, primary_id_color, color, cellID_short)
 
-sce_path <- "/opt/localdata/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/output/monocle3_myeloid/CORRECTED_myeloid_alltimepoints_m10start_noLQ/sce_CORRECTED_myeloid_alltimepoints_m10start_noLQ.rds"
+sce_path <- "/opt/pmedseq-data/wcpilch/Projects/MMRF-ImmuneAtlas-Annotation/output/monocle3_cd8_LQ_included/slingshot_cd8_NEWMD_25/sce_slingshot_cd8_NEWMD_25.rds"
 sce <- readRDS(sce_path)
 
-output_traj <- file.path(output, "Fig3", "Revised_Trajectory_Myeloid")
+output_traj <- file.path(output, "Individual_Risk", "Trajectory")
 dir.create(output_traj, showWarnings = F, recursive = T)
 ```
 
@@ -44,7 +43,6 @@ dir.create(output_traj, showWarnings = F, recursive = T)
 
 ```{r}
 set.seed(42)
-library(shadowtext)
 library("igraph")
 library(slingshot)
 object_MST <- slingMST(sce)
@@ -55,16 +53,15 @@ coords$Cluster <- names(object_MST[2])
 rownames(coords) <- coords$Cluster
 
 
-# path_df <- data.frame(
-#     X = coords[edgelist[, 1], "X"],
-#     Y = coords[edgelist[, 1], "Y"],
-#     X_end = coords[edgelist[, 2], "X"],
-#     Y_end = coords[edgelist[, 2], "Y"]
-# )
+path_df <- data.frame(
+    X = coords[edgelist[, 1], "X"],
+    Y = coords[edgelist[, 1], "Y"],
+    X_end = coords[edgelist[, 2], "X"],
+    Y_end = coords[edgelist[, 2], "Y"]
+)
 
-# Grabs the abundance information - see "Fig4B_F_RP_v_NP_Diff_Abundance.Rmd"
-val_abun <- read.csv("/opt/megaseq-data/wcpilch/MMRF-ImmuneAtlas-Analysis-Sync/output/PAPER_FIGURES/Diff_Abundance/LINEAR_LOGIT/RISK_CATEGORIES_STUDY_SITE/linear_reg_UNImyeloid_only.csv", header = T) |>
-    dplyr::filter(variable == "progression_group") |>
+val_abun <- read.csv("/opt/megaseq-data/wcpilch/MMRF-ImmuneAtlas-Analysis-Sync/output/PAPER_FIGURES/Validation/Individual_Risk/Diff_Abundance/LINEAR_LOGIT/RISK_CATEGORIES_STUDY_SITE/linear_reg_UNIcd8_only.csv", header = T) |>
+    dplyr::filter(factor == "davies_based_riskhigh_risk") |>
     dplyr::select(cluster, coef) |>
     dplyr::rename(Cluster = "cluster")
 
@@ -77,13 +74,6 @@ sds <- SlingshotDataSet(sce)
 
 clusterLabels <- slingClusterLabels(sds)
 connectivity <- slingMST(sds, as.df = T)
-
-clusters <- unique(connectivity$Cluster)
-nclus <- length(clusters)
-centers <- t(vapply(clusters, function(clID) {
-    w <- clusterLabels[, clID]
-    return(apply(X, 2, weighted.mean, w = w))
-}, rep(0, ncol(X)))) # gets center of UMAP points
 
 lineage_list <- unique(connectivity$Lineage)
 lineage_counts <- connectivity |>
@@ -108,18 +98,14 @@ for (lin_idx in lineage_list) {
 
 path_df_simp <- path_df |> dplyr::distinct(Cluster1, Cluster2)
 
-
-# rownames(centers) <- centers$Cluster
-colnames(X)[1:2] <- c("X", "Y")
-colnames(centers)[1:2] <- c("X", "Y")
-
-
 path_df_coords <- data.frame(
-    X = centers[path_df_simp[, "Cluster1"], "X"],
-    Y = centers[path_df_simp[, "Cluster1"], "Y"],
-    X_end = centers[path_df_simp[, "Cluster2"], "X"],
-    Y_end = centers[path_df_simp[, "Cluster2"], "Y"]
+    X = coords[path_df_simp[, "Cluster1"], "X"],
+    Y = coords[path_df_simp[, "Cluster1"], "Y"],
+    X_end = coords[path_df_simp[, "Cluster2"], "X"],
+    Y_end = coords[path_df_simp[, "Cluster2"], "Y"]
 )
+
+
 
 path_df_coords <- path_df_coords |> dplyr::mutate(
     angle = atan2(Y_end - Y, X_end - X),
@@ -130,8 +116,10 @@ path_df_coords <- path_df_coords |> dplyr::mutate(
 
 clusters <- unique(connectivity$Cluster)
 nclus <- length(clusters)
-
-
+centers <- t(vapply(clusters, function(clID) {
+    w <- clusterLabels[, clID]
+    return(apply(X, 2, weighted.mean, w = w))
+}, rep(0, ncol(X)))) # gets center of UMAP points
 X <- X[rowSums(clusterLabels) > 0, , drop = FALSE]
 clusterLabels <- clusterLabels[rowSums(clusterLabels) > 0, ,
     drop = FALSE
@@ -144,32 +132,35 @@ centers <- centers |> as.data.frame()
 centers$Cluster <- rownames(centers)
 
 library(unikn)
+# test <- pal_unikn_pair[1:14]
+# test <- t(test)
+# library(paletteer)
+
+# palette <- paletteer_d("RColorBrewer::Spectral")
+# palette <- c("#2f4f4f", "#a52a2a", "#228b22", "#4b0082", "#ff8c00", "#deb887", "#00ff00", "#00bfff", "#0000ff", "#ff00ff", "#ffff54", "#dda0dd", "#ff1493", "#7fffd4") # paletteer_d("ggthemes::Classic_Cyclic")
+# palette <- colorRampPalette(palette)(14)
+# set.seed(SEED_TESTING)
+# palette <- permute(palette)
 
 
-desat <- function(cols, sat = 0.5) {
-    X <- diag(c(1, sat, 1)) %*% rgb2hsv(col2rgb(cols))
-    hsv(X[1, ], X[2, ], X[3, ])
-}
 
-X$color_sub <- desat(X$color_sub, sat = 1)
 
-p_umap <- ggplot(X, aes(x = X, y = Y)) +
-    ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = X$color_sub, color = X$color_sub)) +
-    theme_prism() +
-    NoLegend()
+#     ggrastr::rasterize(geom_point(shape = 21, stroke = 0, size = 0.5, fill = X$color_sub, color = X$color_sub)) +
+
+# geom_point(aes(fill = sce$ident), col = "grey70", shape = 21) +
 
 mst_with_centers <- dplyr::left_join(connectivity, centers, by = "Cluster") |>
-    # dplyr::left_join(coords, by = "Cluster") |>
+    dplyr::left_join(coords, by = "Cluster") |>
     dplyr::left_join(cluster_size, by = "Cluster")
 
 
-centers <- mst_with_centers |> dplyr::distinct(Cluster, X, Y, `Cell Count`)
+centers <- mst_with_centers |> dplyr::distinct(Cluster, Dim1, Dim2, X, Y, `Cell Count`)
 centers_nostart <- mst_with_centers |>
     dplyr::filter(Order != 1) |>
-    dplyr::distinct(Cluster, X, Y, `Cell Count`)
+    dplyr::distinct(Cluster, Dim1, Dim2, X, Y, `Cell Count`)
 centers_only_start <- mst_with_centers |>
     dplyr::filter(Order == 1) |>
-    dplyr::distinct(Cluster, X, Y, `Cell Count`)
+    dplyr::distinct(Cluster, Dim1, Dim2, X, Y, `Cell Count`)
 
 centers$subcluster_V03072023 <- centers$Cluster
 
@@ -182,16 +173,12 @@ centers <- centers |>
 centers_nostart <- centers_nostart |> dplyr::left_join(per_cluster_info, by = "subcluster_V03072023")
 centers_only_start <- centers_only_start |> dplyr::left_join(per_cluster_info, by = "subcluster_V03072023")
 
-# lin1_only <- dplyr::filter(mst_with_centers, Lineage == 1)
-
-path_df_coords$highlight <- "black"
-
-# Render the underlying umap, then plot labels above
-p <- p_umap + # ggplot(data = mst_with_centers, size = 6, aes(x = X, y = Y)) +
+lin1_only <- dplyr::filter(mst_with_centers, Lineage == 1)
+p <- ggplot(data = mst_with_centers, size = 6, aes(x = X, y = Y)) +
     theme_prism() +
-    geom_segment(data = path_df_coords, aes(xend = X_end_mod, yend = Y_end_mod), arrow = arrow(), color = path_df_coords$highlight, linewidth = path_df_coords$segment_width) +
+    geom_segment(data = path_df_coords, aes(xend = X_end_mod, yend = Y_end_mod), arrow = arrow()) +
     geom_point(data = centers, aes(label = paste0(cellID_short), color = coef, fill = coef, size = `Cell Count`), color = "black", label.size = 0.35, shape = 21, show.legend = T) +
-    geom_shadowtext(data = centers, aes(label = paste0(cellID_short), color = coef), label.size = 0.35, size = 3.5, vjust = 1, nudge_y = -.33, fontface = "bold") +
+    geom_text(data = centers, aes(label = paste0(cellID_short), color = coef), label.size = 0.35, size = 5, vjust = 1, nudge_y = -.125) +
     scale_fill_gradient2(
         low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.21, 0.21),
         oob = squish
@@ -200,11 +187,13 @@ p <- p_umap + # ggplot(data = mst_with_centers, size = 6, aes(x = X, y = Y)) +
         low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.21, 0.21),
         oob = squish
     ) +
-    scale_size_continuous(range = c(2, 10))
+    xlim(0.5, 4.2)
 
 p <- p +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0))
+    # scale_x_continuous(expand = c(0, 0)) +
+    # scale_y_continuous(expand = c(0, 0)) +
+    # scale_x_reverse() +
+    scale_y_reverse()
 
 p <- p + theme(
     axis.line = element_blank(), axis.text.x = element_blank(),
@@ -216,16 +205,29 @@ p <- p + theme(
 ) + guides(size = guide_legend(override.aes = list(colour = "grey", fill = "white")))
 
 
-# Version with shadowtext colored by direction
-pdf_and_png(p, output_traj, "MYELOID_HR_UMAP_traj", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+
+pdf_and_png(p, output_traj, "HR_UMAP_traj", pdfWidth = W_FULL * .75, pdfHeight = H_FULL, scale = 3)
 ```
 
 ```{r}
-p <- p_umap + # ggplot(data = mst_with_centers, size = 6, aes(x = X, y = Y)) +
+val_abun <- read.csv("/opt/megaseq-data/wcpilch/MMRF-ImmuneAtlas-Analysis-Sync/output/PAPER_FIGURES/Validation/Individual_Risk/Diff_Abundance/LINEAR_LOGIT/RISK_CATEGORIES_STUDY_SITE/linear_reg_UNIcd8_only.csv", header = T) |>
+    dplyr::filter(factor == "mixed_nsd2_1q21_class: NSD2.Gain1q21 - Normal") |>
+    dplyr::select(cluster, coef) |>
+    dplyr::rename(Cluster = "cluster")
+
+
+centers <- centers |>
+    dplyr::select(-coef) |>
+    dplyr::left_join(val_abun, by = "Cluster")
+centers_nostart <- centers_nostart |> dplyr::left_join(per_cluster_info, by = "subcluster_V03072023")
+centers_only_start <- centers_only_start |> dplyr::left_join(per_cluster_info, by = "subcluster_V03072023")
+
+lin1_only <- dplyr::filter(mst_with_centers, Lineage == 1)
+p <- ggplot(data = mst_with_centers, size = 6, aes(x = X, y = Y)) +
     theme_prism() +
-    geom_segment(data = path_df_coords, aes(xend = X_end_mod, yend = Y_end_mod), arrow = arrow(), color = path_df_coords$highlight, linewidth = path_df_coords$segment_width) +
+    geom_segment(data = path_df_coords, aes(xend = X_end_mod, yend = Y_end_mod), arrow = arrow()) +
     geom_point(data = centers, aes(label = paste0(cellID_short), color = coef, fill = coef, size = `Cell Count`), color = "black", label.size = 0.35, shape = 21, show.legend = T) +
-    geom_shadowtext(data = centers, aes(label = paste0(cellID_short)), color = "white", label.size = 0.35, size = 3.5, vjust = 1, nudge_y = -.33, fontface = "bold") +
+    geom_text(data = centers, aes(label = paste0(cellID_short), color = coef), label.size = 0.35, size = 5, vjust = 1, nudge_y = -.125) +
     scale_fill_gradient2(
         low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.21, 0.21),
         oob = squish
@@ -234,11 +236,13 @@ p <- p_umap + # ggplot(data = mst_with_centers, size = 6, aes(x = X, y = Y)) +
         low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.21, 0.21),
         oob = squish
     ) +
-    scale_size_continuous(range = c(2, 10))
+    xlim(0.5, 4.2)
 
 p <- p +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0))
+    # scale_x_continuous(expand = c(0, 0)) +
+    # scale_y_continuous(expand = c(0, 0)) +
+    # scale_x_reverse() +
+    scale_y_reverse()
 
 p <- p + theme(
     axis.line = element_blank(), axis.text.x = element_blank(),
@@ -249,18 +253,28 @@ p <- p + theme(
     panel.grid.minor = element_blank(), plot.background = element_blank()
 ) + guides(size = guide_legend(override.aes = list(colour = "grey", fill = "white")))
 
-
-# Version with white shadowtext
-
-pdf_and_png(p, output_traj, "MYELOID_HR_UMAP_traj_white_text", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+pdf_and_png(p, output_traj, "NSD2_1q21_UMAP_traj", pdfWidth = W_FULL * .75, pdfHeight = H_FULL, scale = 3)
 ```
 
 ```{r}
-p <- p_umap + # ggplot(data = mst_with_centers, size = 6, aes(x = X, y = Y)) +
+val_abun <- read.csv("/opt/megaseq-data/wcpilch/MMRF-ImmuneAtlas-Analysis-Sync/output/PAPER_FIGURES/Validation/Individual_Risk/Diff_Abundance/LINEAR_LOGIT/RISK_CATEGORIES_STUDY_SITE/linear_reg_UNIcd8_only.csv", header = T) |>
+    dplyr::filter(factor == "tp53_inactivation_state: COMPLETE - NONE") |>
+    dplyr::select(cluster, coef) |>
+    dplyr::rename(Cluster = "cluster")
+
+
+centers <- centers |>
+    dplyr::select(-coef) |>
+    dplyr::left_join(val_abun, by = "Cluster")
+centers_nostart <- centers_nostart |> dplyr::left_join(per_cluster_info, by = "subcluster_V03072023")
+centers_only_start <- centers_only_start |> dplyr::left_join(per_cluster_info, by = "subcluster_V03072023")
+
+lin1_only <- dplyr::filter(mst_with_centers, Lineage == 1)
+p <- ggplot(data = mst_with_centers, size = 6, aes(x = X, y = Y)) +
     theme_prism() +
-    geom_segment(data = path_df_coords, aes(xend = X_end_mod, yend = Y_end_mod), arrow = arrow(), color = path_df_coords$highlight, linewidth = path_df_coords$segment_width) +
+    geom_segment(data = path_df_coords, aes(xend = X_end_mod, yend = Y_end_mod), arrow = arrow()) +
     geom_point(data = centers, aes(label = paste0(cellID_short), color = coef, fill = coef, size = `Cell Count`), color = "black", label.size = 0.35, shape = 21, show.legend = T) +
-    geom_label_repel(data = centers, aes(label = paste0(cellID_short)), color = "black", label.size = 0.35, size = 3.5, vjust = 1, nudge_y = -.33, fontface = "bold") +
+    geom_text(data = centers, aes(label = paste0(cellID_short), color = coef), label.size = 0.35, size = 5, vjust = 1, nudge_y = -.125) +
     scale_fill_gradient2(
         low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.21, 0.21),
         oob = squish
@@ -269,11 +283,13 @@ p <- p_umap + # ggplot(data = mst_with_centers, size = 6, aes(x = X, y = Y)) +
         low = fill_NP, mid = "grey", high = fill_RP, limits = c(-0.21, 0.21),
         oob = squish
     ) +
-    scale_size_continuous(range = c(2, 10))
+    xlim(0.5, 4.2)
 
 p <- p +
-    scale_x_continuous(expand = c(0, 0)) +
-    scale_y_continuous(expand = c(0, 0))
+    # scale_x_continuous(expand = c(0, 0)) +
+    # scale_y_continuous(expand = c(0, 0)) +
+    # scale_x_reverse() +
+    scale_y_reverse()
 
 p <- p + theme(
     axis.line = element_blank(), axis.text.x = element_blank(),
@@ -284,7 +300,5 @@ p <- p + theme(
     panel.grid.minor = element_blank(), plot.background = element_blank()
 ) + guides(size = guide_legend(override.aes = list(colour = "grey", fill = "white")))
 
-# Version with a text label (Paper version)
-
-pdf_and_png(p, output_traj, "MYELOID_HR_UMAP_traj_white_label", pdfWidth = W_FULL, pdfHeight = H_FULL, scale = 3)
+pdf_and_png(p, output_traj, "tp53_complete_v_none_UMAP_traj", pdfWidth = W_FULL * .75, pdfHeight = H_FULL, scale = 3)
 ```
