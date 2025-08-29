@@ -1,0 +1,1973 @@
+---
+title: "MMRF OS/PFS prediction"
+author: "Edgar Gonzalez-Kozlova"
+date: "Sep 2024"
+output: 
+  html_document:
+  toc: true
+  toc_depth: 2
+  toc_float: true
+  ighlight: espresso
+number_sections: yes
+theme: cerulean
+---
+
+# Start
+
+## Load Libraries and set working directory
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hide'}
+### 
+libs<-c('scater','loomR','Seurat','patchwork','SeuratDisk','monocle3','ggpubr','cowplot','ggplot2','ggbeeswarm','clusterProfiler',
+        'monocle3','limma','edgeR','fitdistrplus','factoextra','ggrepel','tidyverse','pheatmap','reshape2','ComplexHeatmap','survRM2',
+        "survminer","survival","ggalluvial",'gtsummary','variancePartition','DirichletReg','cowsay','emmeans','forestmodel','ROCR','rms')
+lapply(libs, require, character.only = TRUE) ; rm(libs)
+### 
+setwd("/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/")
+```
+
+### Custom Functions
+
+```{r message=FALSE, warning=FALSE}
+###
+get_auc  <- function (m,df) {
+  predictions <- predict(object = m, df[,-which(colnames(df) %in% 'censpfs')],se.fit = TRUE)
+  labels <- df$censpfs
+  pred <- prediction(predictions, labels)
+  perf <- performance(pred,'tpr','fpr')
+  auc_ROCR <- performance(pred, measure = "auc")@y.values[[1]]  
+  return(list(perf=perf,auc=auc_ROCR,predictions=predictions,labels=labels,pred=pred))
+}
+###
+get_auc2  <- function (m,df) {
+  predictions <- predict(object = m, df[which(!is.na(df$d_dx_amm_iss_stage)),-which(colnames(df) %in% 'censpfs')],se.fit = TRUE,type="fitted.ind")
+  labels <- df$censpfs[which(!is.na(df$d_dx_amm_iss_stage))]
+  pred <- prediction(predictions, labels)
+  perf <- performance(pred,'tpr','fpr')
+  auc_ROCR <- performance(pred, measure = "auc")@y.values[[1]]  
+  return(list(perf=perf,auc=auc_ROCR,predictions=predictions,labels=labels,pred=pred))
+}
+###
+get_lrm_validation <- function(m){
+  x <- validate(m,B=1000)
+  class(x) <- 'matrix'
+  x <- as.data.frame(x)
+  x$auc <- x[1,1]/2 +0.5
+return(x)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+### pops
+file_717_per_cell_md <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/1110_per_cell_md.rds')
+x <- table(file_717_per_cell_md$subcluster_V03072023[file_717_per_cell_md$visit_type %in% 'baseline_diagnosis'],
+           file_717_per_cell_md$sample_id[file_717_per_cell_md$visit_type %in% 'baseline_diagnosis'])
+class(x) <- 'matrix' ; x[x>0]<-1 ; x <- rowSums(x) ; x <- sort(x)
+sample_size_df <- data.frame(subcluster=names(x),samples=as.numeric(x))
+sample_size_df$more_than_median <- sample_size_df$samples > median(sample_size_df$samples)
+sample_size_df$more_than_q1 <- sample_size_df$samples > quantile(sample_size_df$samples, probs=c(0.25))
+```
+
+```{r message=FALSE, warning=FALSE}
+### clinical
+load(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/clinical_metadata_IA22_Feb03_release.RData')
+###
+cmia22 <- clinical_metadata_IA22_Feb03_release[which(clinical_metadata_IA22_Feb03_release$public_id %in% file_717_per_cell_md$public_id),]
+cmia22 <- cmia22[,colnames(cmia22) %in% c('censpfs','ttcpfs','censos','ttcos', 'collection_event','sample_id','d_pt_sex','public_id')]
+cmia22 <- unique(cmia22)
+###
+my_vars <- c('public_id','davies_based_risk','visit_type','siteXbatch','progression_group','d_dx_amm_age','d_dx_amm_iss_stage','collection_event','sample_id')
+###
+x <- file_717_per_cell_md[,which(colnames(file_717_per_cell_md) %in% my_vars)]
+rownames(x) <- NULL ; x <- unique(x)
+x$site <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$a
+x$batch <- tidyr::separate(data.frame(x$siteXbatch),1, sep="_", c("a","b",'c','d'))$b
+x$siteXbatch <- NULL
+meta_df <- x
+meta_df <- merge(meta_df,cmia22,by='public_id',all=TRUE) ; rm(cmia22)
+###
+ix <- which(meta_df$davies_based_risk %in% c('standard_risk','high_risk') & meta_df$collection_event %in% 'Baseline')
+meta_baseline_df <- meta_df[ix,] ; rm(meta_df)
+```
+
+```{r message=FALSE, warning=FALSE}
+### COMP
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+my_doublets <- unique(as.character(file_717_per_cell_md$subcluster_V03072023[file_717_per_cell_md$doublet_pred %in% c('dblet_cluster','poss_dblet_cluster')]))
+y <- y[!rownames(y) %in% my_doublets,]
+y <- y[,which(colnames(y) %in% meta_baseline_df$sample_id)]
+Compartment <- c('NkT','BEry','Ery','Myeloid','Plasma') #,'Full'
+cell_proportions <- list()
+for(iii in Compartment){
+  ix <- grep(paste('^',iii,sep=''), rownames(y))
+  z <- y[ix,]
+  cell_proportions[[iii]] = DR_data(t(z))
+}
+cell_props_comp <- do.call(cbind,cell_proportions)
+###
+subcluster_comp_fulldf <- cbind(meta_baseline_df,cell_props_comp)
+```
+
+```{r message=FALSE, warning=FALSE}
+### All populations
+y <- table(file_717_per_cell_md$subcluster_V03072023,file_717_per_cell_md$sample_id)
+class(y) <- 'matrix'
+my_doublets <- unique(as.character(file_717_per_cell_md$subcluster_V03072023[file_717_per_cell_md$doublet_pred %in% c('dblet_cluster','poss_dblet_cluster')]))
+y <- y[!rownames(y) %in% my_doublets,]
+### remove non baseline/relevant
+y <- y[,which(colnames(y) %in% meta_baseline_df$sample_id)]
+cell_props_all = DR_data(t(y))
+```
+
+```{r message=FALSE, warning=FALSE}
+identical(meta_baseline_df$sample_id,rownames(cell_props_all))
+```
+
+```{r message=FALSE, warning=FALSE}
+cell_props_all <- cell_props_all[match(meta_baseline_df$sample_id,rownames(cell_props_all)),]
+identical(meta_baseline_df$sample_id,rownames(cell_props_all))
+```
+
+```{r message=FALSE, warning=FALSE}
+subcluster_all_fulldf <- cbind(meta_baseline_df,cell_props_all)
+
+### function to label quartiles
+get_four_quantiles <- function(p,x){
+  y <- x[,p] ; z <- x[,p]
+  z[y < quantile(y, probs=c(0.25))] <- 'Q1'
+  z[y > quantile(y, probs=c(0.75))] <- 'Q4'
+  z[y >= quantile(y, probs=c(0.25)) & y <= quantile(y, probs=c(0.5))] <- 'Q2'
+  z[y <= quantile(y, probs=c(0.75)) & y >= quantile(y, probs=c(0.5))] <- 'Q3'
+  return(z)  
+}
+
+### function to label medians
+get_median <- function(p,x){
+  y <- x[,p] ; z <- rep('Low',length(y))
+  z[y > median(y)] <- 'High'  
+  return(z)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+dim(subcluster_all_fulldf) # non-corrected data for prediction estimated by cell type
+```
+
+```{r message=FALSE, warning=FALSE}
+dim(subcluster_comp_fulldf) # non-corrected data for prediction estimated by compartments
+```
+
+#### clean workspace
+
+```{r message=FALSE, warning=FALSE}
+rm(list=setdiff(ls(), c("subcluster_all_fulldf","subcluster_comp_fulldf",
+                        'get_four_quantiles','get_median','get_auc2','get_auc','get_lrm_validation') ))
+###
+#table(duplicated(gsub("_SM","",subcluster_all_fulldf$sample_id)))
+subcluster_all_fulldf$sample_id <- gsub("_SM","",subcluster_all_fulldf$sample_id)
+```
+
+#### metadata update
+
+```{r message=FALSE, warning=FALSE}
+###
+updated_meta_per_cell <- readRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/updateMMRF_yered_william/091524_per_cell_md.rds')
+###
+#table(updated_meta_per_cell$collection_event,updated_meta_per_cell$cohort)
+###
+ix <- which(updated_meta_per_cell$collection_event %in% "Baseline")
+updated_meta_per_cell <- updated_meta_per_cell[ix,]
+#table(updated_meta_per_cell$expanded_risk_definition)
+#table(updated_meta_per_cell$IMWG_2024_HR)
+#table(updated_meta_per_cell$IMWG_2024_HR, updated_meta_per_cell$expanded_risk_definition)
+#table(updated_meta_per_cell$cohort)
+updated_meta_per_cell_validation <-  updated_meta_per_cell[which(updated_meta_per_cell$cohort %in% 'validation'),]
+#unique(updated_meta_per_cell_validation$aliquot_id)
+updated_meta_per_cell <- updated_meta_per_cell[which(updated_meta_per_cell$cohort %in% 'discovery'),]
+
+### Simplify
+#"d_amm_tx_asct_1st","siteXbatch"
+temp <- updated_meta_per_cell[!duplicated(updated_meta_per_cell$sample_id),]
+updated_meta_per_cell <- temp
+### non matching IDs
+#table(updated_meta_per_cell$sample_id %in% subcluster_all_fulldf$sample_id)
+#updated_meta_per_cell$sample_id[!(updated_meta_per_cell$sample_id %in% subcluster_all_fulldf$sample_id)]
+#subcluster_all_fulldf#c("sample_id",'d_dx_amm_age','expanded_risk_definition','site','batch','d_dx_amm_iss_stage','censos','censpfs','ttcos','ttcpfs')
+
+#table(updated_meta_per_cell$sample_id %in% subcluster_all_fulldf$sample_id)
+updated_meta_per_cell <- updated_meta_per_cell[updated_meta_per_cell$sample_id %in% subcluster_all_fulldf$sample_id,]
+#table(updated_meta_per_cell$sample_id %in% subcluster_all_fulldf$sample_id)
+###
+subcluster_all_fulldf <- subcluster_all_fulldf[subcluster_all_fulldf$sample_id %in% updated_meta_per_cell$sample_id,]
+#table(updated_meta_per_cell$sample_id %in% subcluster_all_fulldf$sample_id)
+identical(updated_meta_per_cell$sample_id,subcluster_all_fulldf$sample_id)
+subcluster_all_fulldf <- subcluster_all_fulldf[match(updated_meta_per_cell$sample_id,subcluster_all_fulldf$sample_id),]
+identical(updated_meta_per_cell$sample_id,subcluster_all_fulldf$sample_id)
+### add new risk
+subcluster_all_fulldf$IMWG_2024_HR <- updated_meta_per_cell$IMWG_2024_HR
+### add asct
+subcluster_all_fulldf$d_amm_tx_asct_1st <- updated_meta_per_cell$d_amm_tx_asct_1st
+#table(subcluster_all_fulldf$IMWG_2024_HR,subcluster_all_fulldf$davies_based_risk)
+#table(subcluster_all_fulldf$IMWG_2024_HR,subcluster_all_fulldf$d_amm_tx_asct_1st)
+#table(subcluster_all_fulldf$IMWG_2024_HR,subcluster_all_fulldf$d_dx_amm_iss_stage)
+#table(subcluster_all_fulldf$IMWG_2024_HR,subcluster_all_fulldf$censos)
+#table(subcluster_all_fulldf$IMWG_2024_HR,subcluster_all_fulldf$censpfs)
+subcluster_all_fulldf <- subcluster_all_fulldf[subcluster_all_fulldf$IMWG_2024_HR %in% c('high_risk','standard_risk'),]
+#table(subcluster_all_fulldf$IMWG_2024_HR,subcluster_all_fulldf$davies_based_risk)
+#table(subcluster_all_fulldf$IMWG_2024_HR,subcluster_all_fulldf$censpfs)
+
+### Frequencies for Validation
+validation_frequencies <- table(updated_meta_per_cell_validation$aliquot_id,updated_meta_per_cell_validation$seurat_subclusters_label_transferring_Yizhe_v1)
+class(validation_frequencies) <- 'matrix'
+validation_frequencies <- as.data.frame(validation_frequencies)
+
+z <- DR_data(validation_frequencies)
+class(z) <- 'matrix'
+z <- as.data.frame(z)
+### integrate
+table(rownames(z) %in% updated_meta_per_cell_validation$aliquot_id)
+#identical(rownames(z),updated_meta_per_cell_validation$aliquot_id)
+updated_meta_per_cell_validation<-updated_meta_per_cell_validation[match(rownames(z),updated_meta_per_cell_validation$aliquot_id),]
+#identical(rownames(z),updated_meta_per_cell_validation$aliquot_id)
+validation_dataset_w_meta <- cbind(z,updated_meta_per_cell_validation)
+```
+
+#### Proportions for validation from Yered.
+
+```{r message=FALSE, warning=FALSE,include=FALSE,echo=FALSE}
+p1 <- readRDS(
+  file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/updateMMRF_yered_william/MMRF Validation Set Abundances (Adjusted for Batch)/NK_Cells_Validation_IntegrationLabels_BatchResiduals.RDS')
+
+class(p1) <- 'matrix' ; p1 <- as.data.frame(p1)
+
+p2 <- readRDS(
+  file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/updateMMRF_yered_william/MMRF Validation Set Abundances (Adjusted for Batch)/CD4_T_Validation_IntegrationLabels_BatchResiduals.RDS')
+
+class(p2) <- 'matrix' ; p2 <- as.data.frame(p2)
+
+p3 <- readRDS(
+  file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/updateMMRF_yered_william/MMRF Validation Set Abundances (Adjusted for Batch)/B_ery_Validation_IntegrationLabels_BatchResiduals.RDS')
+
+class(p3) <- 'matrix' ; p3 <- as.data.frame(p3)
+
+p4 <- readRDS(
+  file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/updateMMRF_yered_william/MMRF Validation Set Abundances (Adjusted for Batch)/Erythrocyte_Validation_IntegrationLabels_BatchResiduals.RDS')
+
+class(p4) <- 'matrix' ; p4 <- as.data.frame(p4)
+
+p5 <- readRDS(
+  file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/updateMMRF_yered_william/MMRF Validation Set Abundances (Adjusted for Batch)/CD8.NK_T_Validation_IntegrationLabels_BatchResiduals.RDS')
+
+class(p5) <- 'matrix' ; p5 <- as.data.frame(p5)
+
+p6 <- readRDS(
+  file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/updateMMRF_yered_william/MMRF Validation Set Abundances (Adjusted for Batch)/Myeloid_Validation_IntegrationLabels_BatchResiduals.RDS')
+
+class(p6) <- 'matrix' ; p6 <- as.data.frame(p6)
+
+#identical(rownames(p1),rownames(p2))
+#identical(rownames(p1),rownames(p3))
+#identical(rownames(p1),rownames(p4))
+
+yered_prop_data <- cbind(p1,p2,p3,p4,p5,p6)
+
+# clean
+rm(p1,p2,p3,p4,p5,p6)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+#store data as input/output
+rm(list=setdiff(ls(), c("subcluster_all_fulldf","subcluster_comp_fulldf","yered_prop_data",
+                        'get_four_quantiles','get_median','get_auc2','get_auc','get_lrm_validation',
+                        'validation_dataset_w_meta') ))
+
+save(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/temp_re_analysis_sep2024.RData',
+     subcluster_all_fulldf,subcluster_comp_fulldf,get_four_quantiles,get_median,get_auc,get_lrm_validation,
+     validation_frequencies,updated_meta_per_cell_validation,validation_dataset_w_meta
+     )
+###
+```
+
+### LRM modeling: raw proportions (subcluster_all_fulldf)
+
+```{r message=FALSE, warning=FALSE}
+set.seed(42)
+```
+
+```{r message=FALSE, warning=FALSE}
+ddist <- datadist(subcluster_all_fulldf)
+```
+
+```{r message=FALSE, warning=FALSE}
+options(datadist='ddist')
+```
+
+```{r message=FALSE, warning=FALSE}
+predictions_list <- list()
+pred_validation_list <- list()
+```
+
+### clinical lrms
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(censos ~ d_dx_amm_iss_stage, subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list$mod_iss_V1 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_iss_V1 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ d_amm_tx_asct_1st, subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list$mod_asct <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_asct <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ d_dx_amm_iss_stage + d_dx_amm_age, subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list$mod_iss_V2 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_iss_V2 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ d_dx_amm_iss_stage + d_amm_tx_asct_1st, subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list$mod_iss_V3 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_iss_V3 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ d_dx_amm_iss_stage + d_amm_tx_asct_1st + d_dx_amm_age + d_pt_sex, subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list$mod_iss_V4 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_iss_V4 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ d_dx_amm_iss_stage + d_amm_tx_asct_1st + d_dx_amm_age + d_pt_sex + batch + site, subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list$mod_iss_V5 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_iss_V5 <- get_lrm_validation(mod.bi)
+```
+
+### davies lrms
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(censos ~ davies_based_risk + d_pt_sex, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_cyto_V1 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_cyto_V1 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ davies_based_risk + d_dx_amm_age, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_cyto_V2 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_cyto_V2 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ davies_based_risk + d_dx_amm_age + d_pt_sex, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_cyto_V3 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_cyto_V3 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ davies_based_risk + d_dx_amm_age + d_pt_sex + batch + site, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_cyto_V4 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_cyto_V4 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ davies_based_risk + d_amm_tx_asct_1st + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_cyto_V5 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_cyto_V5 <- get_lrm_validation(mod.bi)
+```
+
+### IMWG_2024_HR
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(censos ~ IMWG_2024_HR + d_pt_sex, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_NC_V1 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_NC_V1 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ IMWG_2024_HR + d_dx_amm_age, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_NC_V2 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_NC_V2 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_NC_V3 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_NC_V3 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_NC_V4 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_NC_V4 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censos ~ IMWG_2024_HR + d_amm_tx_asct_1st + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_NC_V5 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_NC_V5 <- get_lrm_validation(mod.bi)
+```
+
+### Pops lrms
+
+#### Sort Subpops present in at least more than 50 patients
+
+```{r message=FALSE, warning=FALSE}
+my_subcluster_names <- colnames(subcluster_all_fulldf)[16:104]
+x <- list()
+for(iii in my_subcluster_names){
+  x[[iii]]<- length(table(subcluster_all_fulldf[[iii]]))
+}
+my_subcluster_names <- names(sort(unlist(x))[sort(unlist(x)) > 50])
+###
+ix <- which(colnames(subcluster_all_fulldf) %in% my_subcluster_names)
+###
+my_subcluster_names <- names(colSums(subcluster_all_fulldf[,ix])[colSums(subcluster_all_fulldf[,ix]) >1])
+```
+
+#### formulas
+
+```{r message=FALSE, warning=FALSE}
+my_form_V1 <- list()
+for(iii in my_subcluster_names){ my_form_V1[[iii]] <- as.formula(paste("censos ~", iii)) }
+
+my_form_V2 <- list()
+for(iii in my_subcluster_names){ my_form_V2[[iii]] <- as.formula(paste("censos ~ d_dx_amm_age +", iii)) }
+
+my_form_V2 <- list()
+for(iii in my_subcluster_names){ my_form_V2[[iii]] <- as.formula(paste("censos ~ d_dx_amm_age + d_pt_sex +", iii)) }
+
+my_form_V3 <- list()
+for(iii in my_subcluster_names){ my_form_V3[[iii]] <- as.formula(paste("censos ~ d_dx_amm_age + d_pt_sex + batch + site +", iii)) }
+
+my_form_V4 <- list()
+for(iii in my_subcluster_names){ my_form_V4[[iii]] <- as.formula(paste("censos ~ d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +", iii)) }
+
+my_form_V5 <- list()
+for(iii in my_subcluster_names){ my_form_V5[[iii]] <- as.formula(paste("censos ~ davies_based_risk + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +", iii)) }
+
+my_form_V6 <- list()
+for(iii in my_subcluster_names){ my_form_V6[[iii]] <- as.formula(paste("censos ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +", iii)) }
+
+```
+
+#### models
+
+```{r message=FALSE, warning=FALSE}
+### V1
+for(iii in names(my_form_V1)) {
+  mod.bi <- lrm(my_form_V1[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V1",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)
+  pred_validation_list[[paste(iii,"V1",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+### V2
+for(iii in names(my_form_V2)) {
+  mod.bi <- lrm(my_form_V2[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V2",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)
+  pred_validation_list[[paste(iii,"V2",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+### V3
+for(iii in names(my_form_V3)) {
+  mod.bi <- lrm(my_form_V3[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V3",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+  pred_validation_list[[paste(iii,"V3",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+### V4
+for(iii in names(my_form_V4)) {
+  mod.bi <- lrm(my_form_V4[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V4",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+  pred_validation_list[[paste(iii,"V4",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+### V5
+for(iii in names(my_form_V5)) {
+  mod.bi <- lrm(my_form_V5[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V5",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+  pred_validation_list[[paste(iii,"V5",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+### V6
+for(iii in names(my_form_V6)) {
+  mod.bi <- lrm(my_form_V6[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V6",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+  pred_validation_list[[paste(iii,"V6",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+#### Feature Selection Model
+
+```{r message=FALSE, warning=FALSE}
+b <- paste( my_subcluster_names[!my_subcluster_names %in% c('')] ,'+') #NkT.8','NkT.7','NkT.11','NkT.9.0
+a <- paste("censos ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +") #
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+```
+
+```{r message=FALSE, warning=FALSE}
+#subcluster_all_fulldf <- type_convert(subcluster_all_fulldf)
+mod.bi <- lrm(as.formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+dim(subcluster_all_fulldf)
+#vif(mod.bi)
+predictions_list[["Feat_Sel"]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+pred_validation_list[["Feat_Sel"]] <- get_lrm_validation(mod.bi)
+```
+
+```{r message=FALSE, warning=FALSE}
+z <- as.data.frame(as.matrix(anova(mod.bi)))
+z <- rownames(z)[z$P<0.1]
+z <- z[z %in% my_subcluster_names]
+z
+Feat_Sel_R1_Features <- z
+```
+
+```{r message=FALSE, warning=FALSE}
+b <- paste(z,'+')
+a <- paste("censos ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(as.formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list[["Feat_Sel_R1"]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+pred_validation_list[["Feat_Sel_R1"]] <- get_lrm_validation(mod.bi)
+```
+
+```{r message=FALSE, warning=FALSE}
+z <- as.data.frame(as.matrix(anova(mod.bi)))
+z <- rownames(z)[z$P<0.1]
+z <- z[z %in% my_subcluster_names]
+z
+Feat_Sel_R2_Features <- z
+```
+
+```{r message=FALSE, warning=FALSE}
+b <- paste(z,'+')
+a <- paste("censos ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(as.formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list[["Feat_Sel_R2"]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+pred_validation_list[["Feat_Sel_R2"]] <- get_lrm_validation(mod.bi)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+z <- as.data.frame(as.matrix(anova(mod.bi)))
+z <- rownames(z)[z$P<0.1]
+z <- z[z %in% my_subcluster_names]
+z
+Feat_Sel_R3_Features <- z
+```
+
+```{r message=FALSE, warning=FALSE}
+b <- paste(z,'+')
+a <- paste("censos ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(as.formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list[["Feat_Sel_R3"]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+pred_validation_list[["Feat_Sel_R3"]] <- get_lrm_validation(mod.bi)
+```
+
+```{r message=FALSE, warning=FALSE}
+z <- as.data.frame(as.matrix(anova(mod.bi)))
+z <- rownames(z)[z$P<0.1]
+z <- z[z %in% my_subcluster_names]
+z
+Feat_Sel_R4_Features <- z
+```
+
+```{r message=FALSE, warning=FALSE}
+b <- paste(z,'+')
+a <- paste("censos ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(as.formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list[["Feat_Sel_R4"]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+pred_validation_list[["Feat_Sel_R4"]] <- get_lrm_validation(mod.bi)
+```
+
+### Summary of predictions OS
+
+```{r message=FALSE, warning=FALSE}
+predictions_OS <- list() ; labels_OS <- list() ; aucs_OS<-list()
+for(iii in names(predictions_list)){ 
+  predictions_OS[[iii]] <- predictions_list[[iii]]$predictions
+  labels_OS[[iii]] <- predictions_list[[iii]]$labels
+  aucs_OS[[iii]] <- predictions_list[[iii]]$auc
+}
+###
+used_features_OS<-list(R1=Feat_Sel_R1_Features,R2=Feat_Sel_R2_Features,
+                       R3=Feat_Sel_R3_Features,R4=Feat_Sel_R4_Features)
+###
+key_predictions_OS_list <- list(predictions=predictions_OS,
+                                labels=labels_OS,
+                                aucs=aucs_OS,
+                                used_features=used_features_OS)
+```
+
+```{r message=FALSE, warning=FALSE}
+predictions_list_OS <- predictions_list
+saveRDS(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/key_predictions_OS_list.RDS',key_predictions_OS_list)
+```
+
+```{r message=FALSE, warning=FALSE}
+pred <- prediction(key_predictions_OS_list$predictions, key_predictions_OS_list$labels)
+perf <- performance(pred,'tpr','fpr')
+#plot(perf,lwd=2,main='ROC curves from 10-fold cross-validation')
+x<- perf@x.values
+y<- perf@y.values
+names(x) <- names(predictions_list_OS)
+names(y) <- names(predictions_list_OS)
+for(i in 1:length(x)){ x[[i]]<- data.frame(model=names(x)[i],x=x[[i]])}
+x <- do.call(rbind,x)
+x$y <- unlist(y)
+rownames(x)<-NULL
+### redo aucs
+aucs <- list()
+for(i in 1:length(predictions_list_OS)) { aucs[[i]] <- data.frame(auc=predictions_list_OS[[i]]$auc,model=names(predictions_list_OS)[i]) }
+aucs <- do.call(rbind,aucs)
+x <- merge(x,aucs,by='model') ; rm(aucs)
+#y <- unique(x[,c(1,4)])
+#y <- y[order(y$auc),]
+```
+
+```{r message=FALSE, warning=FALSE}
+x$type <- x$model
+x$type[grep('cyto',x$model)] <- 'cyto'
+x$type[grep('NC',x$model)] <- 'NC'
+x$type[grep('V1',x$model)] <- 'Single'
+x$type[grep('V2',x$model)] <- '+Age+Sex'
+x$type[grep('V3',x$model)] <- '+Age+Sex+B*Site'
+x$type[grep('V4',x$model)] <- '+Age+Sex+B*Site+ISS+ASTC'
+x$type[grep('V5',x$model)] <- '+Cyto+Age+Sex+B*Site+ISS+ASTC'
+x$type[grep('V6',x$model)] <- '+NC+Age+Sex+B*Site+ISS+ASTC'
+
+x$type <- factor(x$type,levels = c('cyto','NC','Single','+Age+Sex','+Age+Sex+B*Site','+Age+Sex+B*Site+ISS+ASTC',
+                                   '+Cyto+Age+Sex+B*Site+ISS+ASTC','+NC+Age+Sex+B*Site+ISS+ASTC',
+                                   "Feat_Sel","Feat_Sel_R1","Feat_Sel_R2","Feat_Sel_R3","Feat_Sel_R4","mod_asct" ))
+```
+
+
+```{r message=FALSE, warning=FALSE,fig.width=5,fig.height=3}
+ggplot(data=x[which(!is.na(x$type)),])+aes(x=x,y=y,color=type) + geom_line(show.legend = F,aes(group=model)) + theme_classic() + geom_smooth() + geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/ROC_article_boostraping_model_type_OS.pdf',width = 6,height = 3)
+ggplot(data=x[which(!is.na(x$type)),])+aes(x=x,y=y,color=type) + geom_line(show.legend = F,aes(group=model),alpha=0.4) + 
+  theme_classic() + geom_smooth() + geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+dev.off()
+```
+
+
+```{r message=FALSE, warning=FALSE,fig.width=4,fig.height=3}
+ggplot(data=x)+aes(x=x,y=y,color=type) + geom_line(show.legend = F,aes(group=model)) + theme_classic() + #geom_smooth() + 
+  geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=6,fig.height=3}
+ggplot(data=x)+aes(x=x,y=y,color=type) + geom_line(show.legend = T,aes(group=model)) + theme_classic() + #geom_smooth() + 
+  geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/ROC_article_boostraping_model_type_full_OS.pdf',width = 4,height = 3)
+ggplot(data=x)+aes(x=x,y=y,color=type) + geom_line(show.legend = F,aes(group=model)) + theme_classic() + #geom_smooth() + 
+  geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/ROC_article_boostraping_model_type_full_w_labels_OS.pdf',width = 6,height = 3)
+ggplot(data=x)+aes(x=x,y=y,color=type) + geom_line(show.legend = T,aes(group=model)) + theme_classic() + #geom_smooth() + 
+  geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=3,fig.height=3}
+ggplot(data=unique(x[,colnames(x) %in% c('model','type','auc')])) + aes(x=type,y=auc)+geom_boxplot()+theme_classic()+rotate_x_text(angle = 45)+
+  labs(x='Model Type',y='Area Under the Curve',title = '') + ylim(0,1)
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/Boxplot_AUC_article_boostraping_model_type_OS.pdf',width = 3,height = 3)
+ggplot(data=unique(x[,colnames(x) %in% c('model','type','auc')])) + aes(x=type,y=auc)+geom_boxplot()+theme_classic()+rotate_x_text(angle = 45) + 
+  labs(x='Model Type',y='Area Under the Curve',title = '') + ylim(0,1)
+dev.off()
+```
+
+### Compare the different populations
+
+```{r message=FALSE, warning=FALSE}
+x$class <- 'Integrative'
+x$class[grep('^BEry',x$model)] <- 'Bery'
+x$class[grep('Plasma',x$model)] <- 'Plasma'
+x$class[grep('NkT',x$model,ignore.case = T)] <- 'NkT'
+x$class[grep('Myeloid',x$model)] <- 'Myeloid'
+x$class[grep('^Ery',x$model)] <- 'Ery'
+x$class[grep('^Full',x$model)] <- 'Fibroblasts'
+x$class[grep('Cyto',x$model,ignore.case = T)] <- 'Cytogenetic'
+x$class[grep('iss',x$model,ignore.case = T)] <- 'ISS'
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=3,fig.height=3}
+ggplot(data=unique(x[,colnames(x) %in% c('model','class','type','auc')])) + aes(x=reorder(class,auc,median),y=auc)+geom_boxplot()+theme_classic()+rotate_x_text(angle = 45)+
+  labs(x='Model Class',y='AUC')+ ylim(0,1)
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=3,fig.height=3}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/Boxplot_AUC_article_boostraping_model_class_OS.pdf',width = 3,height = 3)
+ggplot(data=unique(x[,colnames(x) %in% c('model','class','type','auc')])) + aes(x=reorder(class,auc,median),y=auc)+geom_boxplot()+theme_classic()+rotate_x_text(angle = 45)+
+  labs(x='Model Class',y='AUC')+ ylim(0,1)
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=9,fig.height=3}
+z<-unique(x[,colnames(x) %in% c('model','class','type','auc')])
+iii <- which(!z$class %in% 'Integrative')
+z <- z[iii,]
+ggplot(data=z) + aes(x=reorder(class,auc,median),y=auc)+geom_boxplot()+
+  theme_classic()+rotate_x_text(angle = 45)+facet_wrap(~type,ncol=6) + labs(y='AUC', x='Model Type * Compartment')
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=7,fig.height=3,include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/Boxplot_AUC_article_boostraping_model_type_compartment_OS.pdf',width = 9,height = 3)
+ggplot(data=z) + aes(x=reorder(class,auc,median),y=auc)+geom_boxplot()+
+  theme_classic()+rotate_x_text(angle = 45)+facet_wrap(~type,ncol=6) + labs(y='AUC', x='Model Type * Compartment')
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+x$subcluster <- tidyr::separate(data.frame(x$model),1, sep="_", c("a","b",'c','d'))$a
+z$subcluster <- tidyr::separate(data.frame(z$model),1, sep="_", c("a","b",'c','d'))$a
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=8,fig.height=4}
+ggplot(data=z) + aes(x=reorder(subcluster,auc,median),y=auc,color=type)+
+  geom_point()+theme_classic()+
+  rotate_x_text(angle = 45)+facet_wrap(~class,ncol=4, scales = 'free_x')
+```
+
+```{r message=FALSE, warning=FALSE}
+predictions_list_OS <- predictions_list
+pred_validation_list_OS <- pred_validation_list
+#
+predictions_list <- list()
+pred_validation_list <- list()
+```
+
+### clinical lrms
+
+```{r message=FALSE, warning=FALSE}
+
+mod.bi <- lrm(censpfs ~ d_dx_amm_iss_stage, subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list$mod_iss_V1 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_iss_V1 <- get_lrm_validation(mod.bi)
+
+#mod.bi <- lrm(censpfs ~ d_amm_tx_asct_1st, subcluster_all_fulldf, x=TRUE,y=TRUE)
+#predictions_list$mod_asct <- get_auc2(mod.bi,subcluster_all_fulldf)
+#pred_validation_list$mod_asct <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ d_dx_amm_iss_stage + d_dx_amm_age, subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list$mod_iss_V2 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_iss_V2 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ d_dx_amm_iss_stage + d_amm_tx_asct_1st, subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list$mod_iss_V3 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_iss_V3 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ d_dx_amm_iss_stage + d_amm_tx_asct_1st + d_dx_amm_age + d_pt_sex, subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list$mod_iss_V4 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_iss_V4 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ d_dx_amm_iss_stage + d_amm_tx_asct_1st + d_dx_amm_age + d_pt_sex + batch + site, subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list$mod_iss_V5 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_iss_V5 <- get_lrm_validation(mod.bi)
+```
+
+### davies lrms
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(censpfs ~ davies_based_risk + d_pt_sex, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_cyto_V1 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_cyto_V1 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ davies_based_risk + d_dx_amm_age, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_cyto_V2 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_cyto_V2 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ davies_based_risk + d_dx_amm_age + d_pt_sex, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_cyto_V3 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_cyto_V3 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ davies_based_risk + d_dx_amm_age + d_pt_sex + batch + site, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_cyto_V4 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_cyto_V4 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ davies_based_risk + d_amm_tx_asct_1st + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_cyto_V5 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_cyto_V5 <- get_lrm_validation(mod.bi)
+```
+
+### IMWG_2024_HR
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(censpfs ~ IMWG_2024_HR + d_pt_sex, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_NC_V1 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_NC_V1 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ IMWG_2024_HR + d_dx_amm_age, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_NC_V2 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_NC_V2 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_NC_V3 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_NC_V3 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_NC_V4 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_NC_V4 <- get_lrm_validation(mod.bi)
+
+mod.bi <- lrm(censpfs ~ IMWG_2024_HR + d_amm_tx_asct_1st + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage, subcluster_all_fulldf, x=TRUE, y=TRUE)
+predictions_list$mod_NC_V5 <- get_auc2(mod.bi,subcluster_all_fulldf)
+pred_validation_list$mod_NC_V5 <- get_lrm_validation(mod.bi)
+```
+
+### Pops lrms
+
+#### Sort Subpops present in at least more than 50 patients
+
+```{r message=FALSE, warning=FALSE}
+my_subcluster_names <- colnames(subcluster_all_fulldf)[16:104]
+x <- list()
+for(iii in my_subcluster_names){
+  x[[iii]]<- length(table(subcluster_all_fulldf[[iii]]))
+}
+my_subcluster_names <- names(sort(unlist(x))[sort(unlist(x)) > 50])
+###
+ix <- which(colnames(subcluster_all_fulldf) %in% my_subcluster_names)
+###
+my_subcluster_names <- names(colSums(subcluster_all_fulldf[,ix])[colSums(subcluster_all_fulldf[,ix]) >1])
+```
+
+#### formulas
+
+```{r message=FALSE, warning=FALSE}
+my_form_V1 <- list()
+for(iii in my_subcluster_names){ my_form_V1[[iii]] <- as.formula(paste("censpfs ~", iii)) }
+
+my_form_V2 <- list()
+for(iii in my_subcluster_names){ my_form_V2[[iii]] <- as.formula(paste("censpfs ~ d_dx_amm_age +", iii)) }
+
+my_form_V2 <- list()
+for(iii in my_subcluster_names){ my_form_V2[[iii]] <- as.formula(paste("censpfs ~ d_dx_amm_age + d_pt_sex +", iii)) }
+
+my_form_V3 <- list()
+for(iii in my_subcluster_names){ my_form_V3[[iii]] <- as.formula(paste("censpfs ~ d_dx_amm_age + d_pt_sex + batch + site +", iii)) }
+
+my_form_V4 <- list()
+for(iii in my_subcluster_names){ my_form_V4[[iii]] <- as.formula(paste("censpfs ~ d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +", iii)) }
+
+my_form_V5 <- list()
+for(iii in my_subcluster_names){ my_form_V5[[iii]] <- as.formula(paste("censpfs ~ davies_based_risk + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +", iii)) }
+
+my_form_V6 <- list()
+for(iii in my_subcluster_names){ my_form_V6[[iii]] <- as.formula(paste("censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +", iii)) }
+
+```
+
+#### models
+
+```{r message=FALSE, warning=FALSE}
+### V1
+for(iii in names(my_form_V1)) {
+  mod.bi <- lrm(my_form_V1[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V1",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)
+  pred_validation_list[[paste(iii,"V1",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+### V2
+for(iii in names(my_form_V2)) {
+  mod.bi <- lrm(my_form_V2[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V2",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)
+  pred_validation_list[[paste(iii,"V2",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+### V3
+for(iii in names(my_form_V3)) {
+  mod.bi <- lrm(my_form_V3[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V3",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+  pred_validation_list[[paste(iii,"V3",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+### V4
+for(iii in names(my_form_V4)) {
+  mod.bi <- lrm(my_form_V4[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V4",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+  pred_validation_list[[paste(iii,"V4",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+### V5
+for(iii in names(my_form_V5)) {
+  mod.bi <- lrm(my_form_V5[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V5",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+  pred_validation_list[[paste(iii,"V5",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+### V6
+for(iii in names(my_form_V6)) {
+  mod.bi <- lrm(my_form_V6[[iii]], subcluster_all_fulldf, x=TRUE,y=TRUE)
+  predictions_list[[paste(iii,"V6",sep='_')]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+  pred_validation_list[[paste(iii,"V6",sep='_')]] <- get_lrm_validation(mod.bi)
+}
+```
+
+#### Feature Selection Model
+
+```{r message=FALSE, warning=FALSE}
+b <- paste( my_subcluster_names[!my_subcluster_names %in% c('')] ,'+') #NkT.8','NkT.7','NkT.11','NkT.9.0
+a <- paste("censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +") #
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+```
+
+```{r message=FALSE, warning=FALSE}
+#subcluster_all_fulldf <- type_convert(subcluster_all_fulldf)
+mod.bi <- lrm(as.formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+dim(subcluster_all_fulldf)
+#vif(mod.bi)
+predictions_list[["Feat_Sel"]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+pred_validation_list[["Feat_Sel"]] <- get_lrm_validation(mod.bi)
+```
+
+```{r message=FALSE, warning=FALSE}
+z <- as.data.frame(as.matrix(anova(mod.bi)))
+z <- rownames(z)[z$P<0.1]
+z <- z[z %in% my_subcluster_names]
+z
+Feat_Sel_R1_Features <- z
+```
+
+```{r message=FALSE, warning=FALSE}
+b <- paste(z,'+')
+a <- paste("censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(as.formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list[["Feat_Sel_R1"]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+pred_validation_list[["Feat_Sel_R1"]] <- get_lrm_validation(mod.bi)
+```
+
+```{r message=FALSE, warning=FALSE}
+z <- as.data.frame(as.matrix(anova(mod.bi)))
+z <- rownames(z)[z$P<0.1]
+z <- z[z %in% my_subcluster_names]
+z
+Feat_Sel_R2_Features <- z
+```
+
+```{r message=FALSE, warning=FALSE}
+b <- paste(z,'+')
+a <- paste("censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(as.formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list[["Feat_Sel_R2"]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+pred_validation_list[["Feat_Sel_R2"]] <- get_lrm_validation(mod.bi)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+z <- as.data.frame(as.matrix(anova(mod.bi)))
+z <- rownames(z)[z$P<0.1]
+z <- z[z %in% my_subcluster_names]
+z
+Feat_Sel_R3_Features <- z
+```
+
+```{r message=FALSE, warning=FALSE}
+b <- paste(z,'+')
+a <- paste("censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(as.formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list[["Feat_Sel_R3"]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+pred_validation_list[["Feat_Sel_R3"]] <- get_lrm_validation(mod.bi)
+```
+
+```{r message=FALSE, warning=FALSE}
+z <- as.data.frame(as.matrix(anova(mod.bi)))
+z <- rownames(z)[z$P<0.1]
+z <- z[z %in% my_subcluster_names]
+z
+Feat_Sel_R4_Features <- z
+```
+
+```{r message=FALSE, warning=FALSE}
+b <- paste(z,'+')
+a <- paste("censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(as.formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+predictions_list[["Feat_Sel_R4"]] <- get_auc2(mod.bi,subcluster_all_fulldf)  
+pred_validation_list[["Feat_Sel_R4"]] <- get_lrm_validation(mod.bi)
+```
+
+### Summary of predictions PFS
+
+```{r message=FALSE, warning=FALSE}
+predictions_PFS <- list() ; labels_PFS <- list() ; aucs_PFS<-list()
+for(iii in names(predictions_list)){ 
+  predictions_PFS[[iii]] <- predictions_list[[iii]]$predictions
+  labels_PFS[[iii]] <- predictions_list[[iii]]$labels
+  aucs_PFS[[iii]] <- predictions_list[[iii]]$auc
+}
+###
+used_features_PFS<-list(R1=Feat_Sel_R1_Features,R2=Feat_Sel_R2_Features,
+                       R3=Feat_Sel_R3_Features,R4=Feat_Sel_R4_Features)
+###
+key_predictions_PFS_list <- list(predictions=predictions_PFS,
+                                 labels=labels_PFS,
+                                 aucs=aucs_PFS,
+                                 used_features=used_features_PFS)
+```
+
+```{r message=FALSE, warning=FALSE}
+saveRDS(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/key_predictions_PFS_list.RDS',key_predictions_PFS_list)
+```
+
+```{r message=FALSE, warning=FALSE}
+save(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/predictions_lists_os_pfs.RData',
+     predictions_list_OS,pred_validation_list_OS,predictions_list,pred_validation_list)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+pred <- prediction(key_predictions_PFS_list$predictions, key_predictions_PFS_list$labels)
+perf <- performance(pred,'tpr','fpr')
+#plot(perf,lwd=2,main='ROC curves from 10-fold cross-validation')
+x<- perf@x.values
+y<- perf@y.values
+names(x) <- names(predictions_list)
+names(y) <- names(predictions_list)
+for(i in 1:length(x)){ x[[i]]<- data.frame(model=names(x)[i],x=x[[i]])}
+x <- do.call(rbind,x)
+x$y <- unlist(y)
+rownames(x)<-NULL
+### redo aucs
+aucs <- list()
+for(i in 1:length(predictions_list)) { aucs[[i]] <- data.frame(auc=predictions_list[[i]]$auc,model=names(predictions_list)[i]) }
+aucs <- do.call(rbind,aucs)
+x <- merge(x,aucs,by='model') ; rm(aucs)
+#y <- unique(x[,c(1,4)])
+#y <- y[order(y$auc),]
+```
+
+```{r message=FALSE, warning=FALSE}
+x$type <- x$model
+x$type[grep('cyto',x$model)] <- 'cyto'
+x$type[grep('NC',x$model)] <- 'NC'
+x$type[grep('V1',x$model)] <- 'Single'
+x$type[grep('V2',x$model)] <- '+Age+Sex'
+x$type[grep('V3',x$model)] <- '+Age+Sex+B*Site'
+x$type[grep('V4',x$model)] <- '+Age+Sex+B*Site+ISS+ASTC'
+x$type[grep('V5',x$model)] <- '+Cyto+Age+Sex+B*Site+ISS+ASTC'
+x$type[grep('V6',x$model)] <- '+NC+Age+Sex+B*Site+ISS+ASTC'
+
+x$type <- factor(x$type,levels = c('cyto','NC','Single','+Age+Sex','+Age+Sex+B*Site','+Age+Sex+B*Site+ISS+ASTC',
+                                   '+Cyto+Age+Sex+B*Site+ISS+ASTC','+NC+Age+Sex+B*Site+ISS+ASTC',
+                                   "Feat_Sel","Feat_Sel_R1","Feat_Sel_R2","Feat_Sel_R3","Feat_Sel_R4","mod_asct" ))
+```
+
+
+```{r message=FALSE, warning=FALSE,fig.width=5,fig.height=3}
+ggplot(data=x[which(!is.na(x$type)),])+aes(x=x,y=y,color=type) + geom_line(show.legend = F,aes(group=model)) + theme_classic() + geom_smooth() + geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/ROC_article_boostraping_model_type_PFS.pdf',width = 6,height = 3)
+ggplot(data=x[which(!is.na(x$type)),])+aes(x=x,y=y,color=type) + geom_line(show.legend = F,aes(group=model),alpha=0.4) + 
+  theme_classic() + geom_smooth() + geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+dev.off()
+```
+
+
+```{r message=FALSE, warning=FALSE,fig.width=4,fig.height=3}
+ggplot(data=x)+aes(x=x,y=y,color=type) + geom_line(show.legend = F,aes(group=model)) + theme_classic() + #geom_smooth() + 
+  geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=6,fig.height=3}
+ggplot(data=x)+aes(x=x,y=y,color=type) + geom_line(show.legend = T,aes(group=model)) + theme_classic() + #geom_smooth() + 
+  geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/ROC_article_boostraping_model_type_full_PFS.pdf',width = 4,height = 3)
+ggplot(data=x)+aes(x=x,y=y,color=type) + geom_line(show.legend = F,aes(group=model)) + theme_classic() + #geom_smooth() + 
+  geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/ROC_article_boostraping_model_type_full_w_labels_PFS.pdf',width = 6,height = 3)
+ggplot(data=x)+aes(x=x,y=y,color=type) + geom_line(show.legend = T,aes(group=model)) + theme_classic() + #geom_smooth() + 
+  geom_abline(color='black') +
+  theme(legend.position = 'right') + labs(x='False Positive Rate',y='True Positive Rate',title = 'Receiver Operating Characteristic Curve')
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=3,fig.height=3}
+ggplot(data=unique(x[,colnames(x) %in% c('model','type','auc')])) + aes(x=type,y=auc)+geom_boxplot()+theme_classic()+rotate_x_text(angle = 45)+
+  labs(x='Model Type',y='Area Under the Curve',title = '') + ylim(0,1)
+```
+
+```{r message=FALSE, warning=FALSE,include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/Boxplot_AUC_article_boostraping_model_type_PFS.pdf',width = 3,height = 3)
+ggplot(data=unique(x[,colnames(x) %in% c('model','type','auc')])) + aes(x=type,y=auc)+geom_boxplot()+theme_classic()+rotate_x_text(angle = 45) + 
+  labs(x='Model Type',y='Area Under the Curve',title = '') + ylim(0,1)
+dev.off()
+```
+
+### Compare the different populations
+
+```{r message=FALSE, warning=FALSE}
+x$class <- 'Integrative'
+x$class[grep('^BEry',x$model)] <- 'Bery'
+x$class[grep('Plasma',x$model)] <- 'Plasma'
+x$class[grep('NkT',x$model,ignore.case = T)] <- 'NkT'
+x$class[grep('Myeloid',x$model)] <- 'Myeloid'
+x$class[grep('^Ery',x$model)] <- 'Ery'
+x$class[grep('^Full',x$model)] <- 'Fibroblasts'
+x$class[grep('Cyto',x$model,ignore.case = T)] <- 'Cytogenetic'
+x$class[grep('iss',x$model,ignore.case = T)] <- 'ISS'
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=3,fig.height=3}
+ggplot(data=unique(x[,colnames(x) %in% c('model','class','type','auc')])) + aes(x=reorder(class,auc,median),y=auc)+geom_boxplot()+theme_classic()+rotate_x_text(angle = 45)+
+  labs(x='Model Class',y='AUC')+ ylim(0,1)
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=3,fig.height=3}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/Boxplot_AUC_article_boostraping_model_class_PFS.pdf',width = 3,height = 3)
+ggplot(data=unique(x[,colnames(x) %in% c('model','class','type','auc')])) + aes(x=reorder(class,auc,median),y=auc)+geom_boxplot()+theme_classic()+rotate_x_text(angle = 45)+
+  labs(x='Model Class',y='AUC')+ ylim(0,1)
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=9,fig.height=3}
+z<-unique(x[,colnames(x) %in% c('model','class','type','auc')])
+iii <- which(!z$class %in% 'Integrative')
+z <- z[iii,]
+ggplot(data=z) + aes(x=reorder(class,auc,median),y=auc)+geom_boxplot()+
+  theme_classic()+rotate_x_text(angle = 45)+facet_wrap(~type,ncol=6) + labs(y='AUC', x='Model Type * Compartment')
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=7,fig.height=3,include=FALSE}
+pdf(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/Boxplot_AUC_article_boostraping_model_type_compartment_PFS.pdf',width = 9,height = 3)
+ggplot(data=z) + aes(x=reorder(class,auc,median),y=auc)+geom_boxplot()+
+  theme_classic()+rotate_x_text(angle = 45)+facet_wrap(~type,ncol=6) + labs(y='AUC', x='Model Type * Compartment')
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+x$subcluster <- tidyr::separate(data.frame(x$model),1, sep="_", c("a","b",'c','d'))$a
+z$subcluster <- tidyr::separate(data.frame(z$model),1, sep="_", c("a","b",'c','d'))$a
+```
+
+```{r message=FALSE, warning=FALSE,fig.width=8,fig.height=4}
+ggplot(data=z) + aes(x=reorder(subcluster,auc,median),y=auc,color=type)+
+  geom_point()+theme_classic()+
+  rotate_x_text(angle = 45)+facet_wrap(~class,ncol=4, scales = 'free_x')
+```
+
+#### Inspect Survival / Progression
+
+```{r message=FALSE, warning=FALSE}
+tmp_df <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),] 
+forest_model( coxph(Surv(ttcos, censos==1) ~ d_pt_sex + d_dx_amm_age + d_dx_amm_iss_stage + d_amm_tx_asct_1st + site + batch, data = tmp_df) )
+```
+
+```{r message=FALSE, warning=FALSE}
+ggColorHue(11)
+```
+
+#### Hits PFS
+
+```{r message=FALSE, warning=FALSE}
+x<-list()
+for(i in 1:length(key_predictions_PFS_list$aucs)){
+  x[[i]] <- data.frame(name=names(key_predictions_PFS_list$aucs)[i],auc=as.numeric(key_predictions_PFS_list$aucs[i])) 
+}
+x<-do.call(rbind,x)
+x <- x[order(x$auc),]
+```
+
+```{r message=FALSE, warning=FALSE}
+tail(x[grep('V1',x$name),])
+```
+
+```{r message=FALSE, warning=FALSE}
+tail(x[grep('V6',x$name),])
+```
+
+#### Hits OS
+
+```{r message=FALSE, warning=FALSE}
+x<-list()
+for(i in 1:length(key_predictions_OS_list$aucs)){
+  x[[i]] <- data.frame(name=names(key_predictions_OS_list$aucs)[i],auc=as.numeric(key_predictions_OS_list$aucs[i])) 
+}
+x<-do.call(rbind,x)
+x <- x[order(x$auc),]
+```
+
+```{r message=FALSE, warning=FALSE}
+tail(x[grep('V1',x$name),])
+```
+
+```{r message=FALSE, warning=FALSE}
+tail(x[grep('V6',x$name),])
+```
+
+### Simple Figure with key models (OS)
+
+#### Demographics alone + technical correction (OS)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list_OS$mod_iss_V5$predictions) > median(as.numeric(predictions_list_OS$mod_iss_V5$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_demographics+tech_OS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#64B200')) +labs(title = 'Age+Sex+ISS+ASCT')
+dev.off()
+```
+
+#### Demographics alone (OS)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list_OS$mod_iss_V4$predictions) > median(as.numeric(predictions_list_OS$mod_iss_V4$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_demographics_OS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#64B200')) +labs(title = 'Age+Sex+ISS+ASCT')
+dev.off()
+```
+
+#### Cytogenetics alone (OS)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list_OS$mod_NC_V1$predictions) > median(as.numeric(predictions_list_OS$mod_NC_V1$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_cytogenetics_OS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00BD5C')) +labs(title = 'CYTO')
+dev.off()
+```
+
+#### Cytogenetics alone LABELS (OS)
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcos, censos==1) ~ IMWG_2024_HR, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3$p <- tmp_df_V3$IMWG_2024_HR
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_cytogenetics_labels_OS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00BD5C')) +labs(title = 'CYTO')
+dev.off()
+```
+
+#### Cytogenetics alone (OS)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list_OS$mod_NC_V5$predictions) > median(as.numeric(predictions_list_OS$mod_NC_V5$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_cytogenetics+clinical_OS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00BD5C')) +labs(title = 'CYTO')
+dev.off()
+```
+
+#### get best AI auc
+
+```{r message=FALSE, warning=FALSE}
+x<-list()
+for(i in 1:length(predictions_list_OS)){
+  x[[i]] <- data.frame(name=names(predictions_list_OS)[i],auc=predictions_list_OS[[i]]$auc) 
+}
+x<-do.call(rbind,x)
+x <- x[order(x$auc),]
+tail(x[grep('V1',x$name),])
+```
+
+
+#### IA alone
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list_OS$BEry.6_V1$predictions) > median(as.numeric(predictions_list_OS$BEry.6_V1$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA_alone_OS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+alone')
+dev.off()
+```
+
+#### IA+COV
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list_OS$Myeloid.10_V6$predictions) > median(as.numeric(predictions_list_OS$Myeloid.10_V6$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA_+clinical_OS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+clinical')
+dev.off()
+```
+
+#### IA+CYTO+CLINICAL
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list_OS$Feat_Sel_R2$predictions) > median(as.numeric(predictions_list_OS$Feat_Sel_R2$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA+CYTO+CLIN_OS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+clinical')
+dev.off()
+```
+
+
+#### IA+CYTO+CLINICAL
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list_OS$Feat_Sel_R4$predictions) > median(as.numeric(predictions_list_OS$Feat_Sel_R4$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA+CYTO+CLIN_R4_OS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcos, censos==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "OS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+clinical')
+dev.off()
+```
+
+
+
+
+### Simple Figure with key models (PFS)
+
+#### Demographics alone + technical correction (PFS)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list$mod_iss_V5$predictions) > median(as.numeric(predictions_list$mod_iss_V5$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_demographics+tech_PFS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#64B200')) +labs(title = 'Age+Sex+ISS+ASCT')
+dev.off()
+```
+
+#### Demographics alone (PFS)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list$mod_iss_V4$predictions) > median(as.numeric(predictions_list$mod_iss_V4$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_demographics_PFS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#64B200')) +labs(title = 'Age+Sex+ISS+ASCT')
+dev.off()
+```
+
+#### Cytogenetics alone (PFS)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list$mod_NC_V1$predictions) > median(as.numeric(predictions_list$mod_NC_V1$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_cytogenetics_PFS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00BD5C')) +labs(title = 'CYTO')
+dev.off()
+```
+
+#### Cytogenetics alone LABELS (PFS)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3$IMWG_2024_HR <- factor(tmp_df_V3$IMWG_2024_HR, levels = c('standard_risk','high_risk') )
+coxph(Surv(ttcpfs, censpfs==1) ~ IMWG_2024_HR, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3$p <- tmp_df_V3$IMWG_2024_HR
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_cytogenetics_labels_PFS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00BD5C')) +labs(title = 'CYTO')
+dev.off()
+```
+
+#### Cytogenetics with clinical (PFS)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(predictions_list$mod_NC_V5$predictions) > median(as.numeric(predictions_list$mod_NC_V5$predictions))
+tmp_df_V3$p[tmp_df_V3$p == '1'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == '0'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_cytogenetics+clinical_PFS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00BD5C')) +labs(title = 'CYTO')
+dev.off()
+```
+
+#### IA alone
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(key_predictions_PFS_list$predictions$BEry.6_V1) > median(as.numeric(key_predictions_PFS_list$predictions$BEry.6_V1))
+tmp_df_V3$p[tmp_df_V3$p == 'TRUE'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == 'FALSE'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA_alone_PFS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+alone')
+dev.off()
+```
+
+#### IA+COV
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(key_predictions_PFS_list$predictions$Myeloid.8_V6) > median(as.numeric(key_predictions_PFS_list$predictions$Myeloid.8_V6))
+tmp_df_V3$p[tmp_df_V3$p == 'TRUE'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == 'FALSE'] <- 'Low'
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3$p <- factor(tmp_df_V3$p, levels = c('Low','High'))
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA_+clinical_PFS.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+clinical')
+dev.off()
+```
+
+#### IA+CYTO+CLINICAL (ALL)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(key_predictions_PFS_list$predictions$Feat_Sel) > median(as.numeric(key_predictions_PFS_list$predictions$Feat_Sel))
+tmp_df_V3$p[tmp_df_V3$p == 'TRUE'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == 'FALSE'] <- 'Low'
+tmp_df_V3$p <- factor(tmp_df_V3$p, levels = c('Low','High'))
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA+CYTO+CLIN_PFS_ALL.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+CYTO+PFS')
+dev.off()
+```
+
+#### IA+CYTO+CLINICAL (feat selection 1)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(key_predictions_PFS_list$predictions$Feat_Sel_R1) > median(as.numeric(key_predictions_PFS_list$predictions$Feat_Sel_R1))
+tmp_df_V3$p[tmp_df_V3$p == 'TRUE'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == 'FALSE'] <- 'Low'
+tmp_df_V3$p <- factor(tmp_df_V3$p, levels = c('Low','High'))
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA+CYTO+CLIN_PFS_FS1.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+CYTO+PFS')
+dev.off()
+```
+
+#### IA+CYTO+CLINICAL (feat selection 2)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(key_predictions_PFS_list$predictions$Feat_Sel_R2) > median(as.numeric(key_predictions_PFS_list$predictions$Feat_Sel_R2))
+tmp_df_V3$p[tmp_df_V3$p == 'TRUE'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == 'FALSE'] <- 'Low'
+tmp_df_V3$p <- factor(tmp_df_V3$p, levels = c('Low','High'))
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA+CYTO+CLIN_PFS_FS2.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+CYTO+PFS')
+dev.off()
+```
+
+#### IA+CYTO+CLINICAL (feat selection 3)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(key_predictions_PFS_list$predictions$Feat_Sel_R3) > median(as.numeric(key_predictions_PFS_list$predictions$Feat_Sel_R3))
+tmp_df_V3$p[tmp_df_V3$p == 'TRUE'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == 'FALSE'] <- 'Low'
+tmp_df_V3$p <- factor(tmp_df_V3$p, levels = c('Low','High'))
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA+CYTO+CLIN_PFS_FS3.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+CYTO+PFS')
+dev.off()
+```
+
+#### IA+CYTO+CLINICAL (feat selection 4)
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+tmp_df_V3$p <- as.numeric(key_predictions_PFS_list$predictions$Feat_Sel_R4) > median(as.numeric(key_predictions_PFS_list$predictions$Feat_Sel_R4))
+tmp_df_V3$p[tmp_df_V3$p == 'TRUE'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == 'FALSE'] <- 'Low'
+tmp_df_V3$p <- factor(tmp_df_V3$p, levels = c('Low','High'))
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA+CYTO+CLIN_PFS_FS4.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+CYTO+PFS')
+dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+key_predictions_PFS_list$used_features$R4
+```
+
+### Validation dataset (PFS)
+
+```{r message=FALSE, warning=FALSE}
+ddist <- datadist(subcluster_all_fulldf)
+options(datadist='ddist')
+```
+
+```{r message=FALSE, warning=FALSE}
+#validation_dataset_w_meta
+### formula
+b <- paste(key_predictions_PFS_list$used_features$R4,'+')
+a <- paste("censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage + d_amm_tx_asct_1st +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+
+### model
+mod.bi <- lrm(formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+predictions <- predict(object = mod.bi, 
+                       subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),-which(colnames(subcluster_all_fulldf) %in% 'censpfs')],
+                       se.fit = TRUE,type="fitted.ind")
+
+labels <- subcluster_all_fulldf$censpfs[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage))]
+pred <- prediction(predictions, labels)
+perf <- performance(pred,'tpr','fpr')
+performance(pred, measure = "auc")@y.values[[1]]  
+```
+
+```{r message=FALSE, warning=FALSE}
+#validation_dataset_w_meta
+### formula
+b <- paste(key_predictions_PFS_list$used_features$R4,'+')
+a <- paste("censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+
+### model
+mod.bi <- lrm(formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+predictions <- predict(object = mod.bi, 
+                       subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),-which(colnames(subcluster_all_fulldf) %in% 'censpfs')],
+                       se.fit = TRUE,type="fitted.ind")
+
+labels <- subcluster_all_fulldf$censpfs[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage))]
+pred <- prediction(predictions, labels)
+perf <- performance(pred,'tpr','fpr')
+performance(pred, measure = "auc")@y.values[[1]]  
+```
+
+```{r message=FALSE, warning=FALSE}
+#validation_dataset_w_meta
+subcluster_all_fulldf$sitexbatch <- paste(subcluster_all_fulldf$site,subcluster_all_fulldf$batch,sep='_')
+### formula
+full_form <- "censpfs ~ davies_based_risk + d_dx_amm_age + d_pt_sex + d_dx_amm_iss_stage + 
+              NkT.2.0 + Myeloid.1 + BEry.12 + Plasma.4 + NkT.2.1 + Plasma.2 + Myeloid.10 + NkT.2.2 + Myeloid.8 + Myeloid.4 + NkT.14"
+### model
+mod.bi <- lrm(formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+predictions <- predict(object = mod.bi, 
+                       subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),-which(colnames(subcluster_all_fulldf) %in% 'censpfs')],
+                       se.fit = TRUE,type="fitted.ind")
+
+labels <- subcluster_all_fulldf$censpfs[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage))]
+pred <- prediction(predictions, labels)
+perf <- performance(pred,'tpr','fpr')
+performance(pred, measure = "auc")@y.values[[1]]  
+```
+
+```{r message=FALSE, warning=FALSE}
+validation_dataset_w_meta$DISCOVERY.doublet_pred <- NULL
+validation_dataset_w_meta$sample_id <- NULL
+validation_dataset_w_meta$AT_RESPONSEASSES <- NULL
+validation_dataset_w_meta$D_IM_CD81_DETECTED <- NULL
+validation_dataset_w_meta$D_IM_CD81_PC_PERCENT <- NULL
+validation_dataset_w_meta$batch <- 'B4'
+validation_dataset_w_meta$site <- gsub('_B4','',validation_dataset_w_meta$siteXbatch)
+
+validation_dataset_w_meta <- validation_dataset_w_meta %>% select_if(~!all(is.na(.)))
+validation_dataset_w_meta <- as.data.frame(validation_dataset_w_meta)
+validation_dataset_w_meta$sitexbatch <- paste(validation_dataset_w_meta$site,validation_dataset_w_meta$batch,sep='_')
+```
+
+```{r message=FALSE, warning=FALSE}
+ddist <- datadist(validation_dataset_w_meta)
+options(datadist='ddist')
+```
+
+```{r message=FALSE, warning=FALSE}
+mod.bi <- lrm(formula(full_form), validation_dataset_w_meta[which(!is.na(validation_dataset_w_meta$d_dx_amm_iss_stage) & 
+                                                         !(validation_dataset_w_meta$IMWG_2024_HR %in% 'not_calculable')),], x=TRUE,y=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+predictions <- predict(object = mod.bi, 
+                       validation_dataset_w_meta[which(!is.na(validation_dataset_w_meta$d_dx_amm_iss_stage) & 
+                                                         !(validation_dataset_w_meta$IMWG_2024_HR %in% 'not_calculable')),-which(colnames(validation_dataset_w_meta) %in% 'censpfs')],
+                       se.fit = TRUE,type="fitted.ind")
+
+labels <- validation_dataset_w_meta$censpfs[which(!is.na(validation_dataset_w_meta$d_dx_amm_iss_stage) & 
+                                                         !(validation_dataset_w_meta$IMWG_2024_HR %in% 'not_calculable'))]
+pred <- prediction(predictions, labels)
+perf <- performance(pred,'tpr','fpr')
+performance(pred, measure = "auc")@y.values[[1]]  
+```
+
+```{r message=FALSE, warning=FALSE}
+ddist <- datadist(subcluster_all_fulldf)
+options(datadist='ddist')
+
+predictions <- predict(object = mod.bi, 
+                       subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),],
+                       se.fit = TRUE,type="fitted.ind")
+
+labels <- subcluster_all_fulldf$censpfs[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage))]
+pred <- prediction(predictions, labels)
+perf <- performance(pred,'tpr','fpr')
+performance(pred, measure = "auc")@y.values[[1]]  
+```
+
+```{r message=FALSE, warning=FALSE}
+tmp_df_V3 <- validation_dataset_w_meta[which(!is.na(validation_dataset_w_meta$d_dx_amm_iss_stage) & 
+                                                         !(validation_dataset_w_meta$IMWG_2024_HR %in% 'not_calculable')),]
+
+tmp_df_V3$p <- as.numeric(predictions) > median(as.numeric(predictions))
+tmp_df_V3$p[tmp_df_V3$p == 'TRUE'] <- 'High'
+tmp_df_V3$p[tmp_df_V3$p == 'FALSE'] <- 'Low'
+tmp_df_V3$p <- factor(tmp_df_V3$p, levels = c('Low','High'))
+```
+
+```{r message=FALSE, warning=FALSE}
+coxph(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3) %>% gtsummary::tbl_regression(exp = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+#pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA+CYTO+CLIN_PFS_FS4.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ p, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'IA+CYTO+PFS')
+dev.off()
+```
+```{r message=FALSE, warning=FALSE}
+#pdf(file = '/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/figures/km_labels_model_IA+CYTO+CLIN_PFS_FS4.pdf',width = 3.85, height = 4.95)
+ggsurvplot( fit = survfit(Surv(ttcpfs, censpfs==1) ~ d_amm_tx_asct_1st, data = tmp_df_V3), 
+            type=c("kaplan-meier"),surv.median.line = 'hv',log.rank.weights= "survdiff",pval.method = TRUE,
+            xlab = "Days", ylab = "PFS Prob.",pval = TRUE,risk.table = TRUE,palette = c('black','#00C1A7')) +labs(title = 'ASCT')
+#dev.off()
+```
+
+```{r message=FALSE, warning=FALSE}
+#validation_dataset_w_meta
+### formula
+b <- paste(key_predictions_PFS_list$used_features$R1,'+')
+a <- paste("censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+
+### model
+mod.bi <- lrm(formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+predictions <- predict(object = mod.bi, 
+                       subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),-which(colnames(subcluster_all_fulldf) %in% 'censpfs')],
+                       se.fit = TRUE,type="fitted.ind")
+
+labels <- subcluster_all_fulldf$censpfs[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage))]
+pred <- prediction(predictions, labels)
+perf <- performance(pred,'tpr','fpr')
+performance(pred, measure = "auc")@y.values[[1]]  
+```
+
+```{r message=FALSE, warning=FALSE}
+validation_dataset_w_meta$batch <- 'B4'
+validation_dataset_w_meta$site <- gsub('_B4','',validation_dataset_w_meta$siteXbatch)
+
+predictions <- predict(object = mod.bi, 
+                       validation_dataset_w_meta[which(!is.na(validation_dataset_w_meta$d_dx_amm_iss_stage) & 
+                                                         !(validation_dataset_w_meta$IMWG_2024_HR %in% 'not_calculable')),-which(colnames(validation_dataset_w_meta) %in% 'censpfs')],
+                       se.fit = TRUE,type="fitted.ind")
+
+labels <- validation_dataset_w_meta$censpfs[which(!is.na(validation_dataset_w_meta$d_dx_amm_iss_stage) & 
+                                                         !(validation_dataset_w_meta$IMWG_2024_HR %in% 'not_calculable'))]
+pred <- prediction(predictions, labels)
+perf <- performance(pred,'tpr','fpr')
+performance(pred, measure = "auc")@y.values[[1]]  
+
+```
+
+```{r message=FALSE, warning=FALSE}
+### formula
+b <- paste( my_subcluster_names[!my_subcluster_names %in% c('')] ,'+') 
+a <- paste("censpfs ~ IMWG_2024_HR + d_dx_amm_age + d_pt_sex + batch + site + d_dx_amm_iss_stage +")
+full_form <- capture.output(cat(a,b))
+full_form <- gsub(' \\+$','',full_form)
+
+### model
+mod.bi <- lrm(formula(full_form), subcluster_all_fulldf, x=TRUE,y=TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+predictions <- predict(object = mod.bi, 
+                       subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),-which(colnames(subcluster_all_fulldf) %in% 'censpfs')],
+                       se.fit = TRUE,type="fitted.ind")
+
+labels <- subcluster_all_fulldf$censpfs[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage))]
+pred <- prediction(predictions, labels)
+perf <- performance(pred,'tpr','fpr')
+performance(pred, measure = "auc")@y.values[[1]]  
+```
+
+```{r message=FALSE, warning=FALSE}
+validation_dataset_w_meta$batch <- 'B4'
+validation_dataset_w_meta$site <- gsub('_B4','',validation_dataset_w_meta$siteXbatch)
+
+predictions <- predict(object = mod.bi, 
+                       validation_dataset_w_meta[which(!is.na(validation_dataset_w_meta$d_dx_amm_iss_stage) & 
+                                                         !(validation_dataset_w_meta$IMWG_2024_HR %in% 'not_calculable')),-which(colnames(validation_dataset_w_meta) %in% 'censpfs')],
+                       se.fit = TRUE,type="fitted.ind")
+
+labels <- validation_dataset_w_meta$censpfs[which(!is.na(validation_dataset_w_meta$d_dx_amm_iss_stage) & 
+                                                         !(validation_dataset_w_meta$IMWG_2024_HR %in% 'not_calculable'))]
+pred <- prediction(predictions, labels)
+perf <- performance(pred,'tpr','fpr')
+performance(pred, measure = "auc")@y.values[[1]]  
+
+```
+
+```{r message=FALSE, warning=FALSE}
+final_discovery_cohort <- subcluster_all_fulldf[which(!is.na(subcluster_all_fulldf$d_dx_amm_iss_stage)),]
+final_validation_cohort <- validation_dataset_w_meta[which(!is.na(validation_dataset_w_meta$d_dx_amm_iss_stage) & 
+                                                         !(validation_dataset_w_meta$IMWG_2024_HR %in% 'not_calculable')),]
+###
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/final_discovery_cohort.RDS',final_discovery_cohort)
+saveRDS(file='/Users/gonzae34/Documents/projects_gnjatic/MMRF_projects/immune_atlas/RData/final_validation_cohort.RDS',final_validation_cohort)
+```
+
+```{r message=FALSE, warning=FALSE}
+```
