@@ -1,0 +1,2 @@
+This directory contains the cell annotation dictionary associated with the paper, "A single-cell atlas characterizes dysregulation of the bone marrow immune microenvironment associated with outcomes in multiple myeloma"
+
